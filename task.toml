@@ -1,0 +1,27 @@
+schema_version = "1.3"
+
+[task]
+name = "local/thermal-expansion-wls"
+description = "膨胀仪升温曲线的加权最小二乘拟合与参数不确定度"
+authors = [{ name = "shuai" }]
+keywords = ["python", "加权最小二乘", "膨胀系数", "协方差"]
+
+[agent]
+timeout_sec = 3600
+
+[environment]
+build_timeout_sec = 900
+cpus = 1
+memory_mb = 2048
+storage_mb = 4096
+gpus = 0
+allow_internet = true
+
+[verifier]
+timeout_sec = 300
+
+[metadata]
+difficulty = "hard"
+category = "数值计算"
+tags = ["python", "weighted-least-squares", "covariance", "thermal-expansion"]
+expert_time_estimate = "3h"
