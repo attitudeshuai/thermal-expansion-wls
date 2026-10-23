@@ -29,9 +29,9 @@ WEIGHTS = {
     "test_one_minus_min_used_rejected": 0.09,
     "test_huge_sigma_point_barely_moves_fit": 0.08,
     "test_invalid_data_rejected_without_output": 0.05,
-    "test_report_schema_and_rounding": 0.03,
+    "test_report_schema_and_rounding": 0.02,
     "test_rerun_produces_identical_bytes": 0.02,
-    "test_failed_run_keeps_previous_report": 0.00,
+    "test_failed_run_keeps_previous_report": 0.01,
 }
 
 
