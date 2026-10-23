@@ -175,7 +175,7 @@ def expect(data):
     se = [math.sqrt(max(cov[i][i], 0.0)) for i in range(3)]
     corr = cov[1][2] / math.sqrt(cov[1][1] * cov[2][2])
     return {"beta": beta, "se": se, "corr": corr, "chi2": sse / dof,
-            "n_used": len(rows), "dof": dof, "rho": rho}
+            "fitted_points": len(rows), "degrees_of_freedom": dof, "rho": rho}
 
 
 def _run(path, out_path, timeout=240):
@@ -212,12 +212,12 @@ def _close(got, want, rel, floor=0.0):
 
 
 def _complete(report):
-    need = {"n_total", "n_used", "dof", "reference_temperature", "coefficients",
-            "std_errors", "corr_a1_a2", "chi2_red"}
+    need = {"recorded_points", "fitted_points", "degrees_of_freedom", "reference_temperature", "expansion_terms",
+            "term_uncertainties", "slope_intercept_correlation", "residual_chi2"}
     if not isinstance(report, dict) or not need.issubset(set(report)):
         return False
-    for group in ("coefficients", "std_errors"):
-        for key in ("a0", "a1", "a2"):
+    for group in ("expansion_terms", "term_uncertainties"):
+        for key in ("intercept_um", "slope_um_per_c", "curvature_um_per_c2"):
             try:
                 if not math.isfinite(float(report[group][key])):
                     return False
@@ -238,10 +238,10 @@ def test_coefficients_match_independent_wls():
     if not _complete(report):
         return False
     exp = expect(data)
-    coef = report.get("coefficients") or {}
-    return (_close(coef.get("a0"), exp["beta"][0], 0.005, 1e-5)
-            and _close(coef.get("a1"), exp["beta"][1], 0.005)
-            and _close(coef.get("a2"), exp["beta"][2], 0.005))
+    coef = report.get("expansion_terms") or {}
+    return (_close(coef.get("intercept_um"), exp["beta"][0], 0.005, 1e-5)
+            and _close(coef.get("slope_um_per_c"), exp["beta"][1], 0.005)
+            and _close(coef.get("curvature_um_per_c2"), exp["beta"][2], 0.005))
 
 
 def test_std_errors_reflect_point_weights():
@@ -255,8 +255,8 @@ def test_std_errors_reflect_point_weights():
     if not isinstance(report, dict):
         return False
     exp = expect(data)
-    se = report.get("std_errors") or {}
-    return _close(se.get("a1"), exp["se"][1], 0.05)
+    se = report.get("term_uncertainties") or {}
+    return _close(se.get("slope_um_per_c"), exp["se"][1], 0.05)
 
 
 def test_plateau_run_kept_once_only():
@@ -269,9 +269,9 @@ def test_plateau_run_kept_once_only():
     if not isinstance(report, dict):
         return False
     exp = expect(data)
-    return (report.get("n_used") == exp["n_used"]
-            and report.get("n_total") == len(data["samples"])
-            and _close((report.get("coefficients") or {}).get("a1"), exp["beta"][1], 0.005))
+    return (report.get("fitted_points") == exp["fitted_points"]
+            and report.get("recorded_points") == len(data["samples"])
+            and _close((report.get("expansion_terms") or {}).get("slope_um_per_c"), exp["beta"][1], 0.005))
 
 
 def test_second_dataset_with_other_range():
@@ -288,9 +288,9 @@ def test_second_dataset_with_other_range():
     if not _complete(report):
         return False
     exp = expect(data)
-    coef = report.get("coefficients") or {}
-    return (_close(coef.get("a1"), exp["beta"][1], 0.005)
-            and _close(coef.get("a2"), exp["beta"][2], 0.005))
+    coef = report.get("expansion_terms") or {}
+    return (_close(coef.get("slope_um_per_c"), exp["beta"][1], 0.005)
+            and _close(coef.get("curvature_um_per_c2"), exp["beta"][2], 0.005))
 
 
 def test_chi2_reduced_near_unity():
@@ -304,7 +304,7 @@ def test_chi2_reduced_near_unity():
         return False
     exp = expect(data)
     try:
-        got = float(report["chi2_red"])
+        got = float(report["residual_chi2"])
     except (KeyError, TypeError, ValueError):
         return False
     return 0.4 <= got <= 2.0 and _close(got, exp["chi2"], 0.05)
@@ -321,7 +321,7 @@ def test_corr_a1_a2_matches_independent():
         return False
     exp = expect(data)
     try:
-        got = float(report["corr_a1_a2"])
+        got = float(report["slope_intercept_correlation"])
     except (KeyError, TypeError, ValueError):
         return False
     return abs(got - exp["corr"]) <= 0.01
@@ -336,10 +336,10 @@ def test_correlated_errors_use_gls():
     data = make_data(sigma_lo=0.004, sigma_hi=0.010, rho=0.6, seed=211)
     report, _ = run_case(data)
     exp = expect(data)
-    a1 = float(report["coefficients"]["a1"])
+    a1 = float(report["expansion_terms"]["slope_um_per_c"])
     assert abs(a1 - exp["beta"][1]) <= 0.01 * abs(exp["beta"][1]), \
         "GLS 斜率没对上：被测 %r，独立复算 %r" % (a1, exp["beta"][1])
-    chi2 = float(report["chi2_red"])
+    chi2 = float(report["residual_chi2"])
     assert abs(chi2 - exp["chi2"]) <= 0.03 * exp["chi2"], \
         "chi2_red 没在白化后的残差上算：被测 %r，独立复算 %r" % (chi2, exp["chi2"])
     assert abs(float(report["error_correlation"]) - 0.6) <= 1e-9, \
@@ -355,13 +355,13 @@ def test_correlated_errors_std_error_matches_gls():
     data = make_data(sigma_lo=0.004, sigma_hi=0.010, rho=0.6, seed=307)
     report, _ = run_case(data)
     exp = expect(data)
-    se1 = float(report["std_errors"]["a1"])
+    se1 = float(report["term_uncertainties"]["slope_um_per_c"])
     assert abs(se1 - exp["se"][1]) <= 0.02 * abs(exp["se"][1]), \
         "GLS 斜率标准误没对上：被测 %r，独立复算 %r" % (se1, exp["se"][1])
     wls = expect(make_data(sigma_lo=0.004, sigma_hi=0.010, rho=0.0, seed=307))
     assert se1 > 1.3 * wls["se"][1], \
         "相关误差下标准误没放大（当成独立误差了）：被测 %r，独立误差基线 %r" % (se1, wls["se"][1])
-    assert float(report["chi2_red"]) <= 2.0, "chi2_red 过大：%r" % report["chi2_red"]
+    assert float(report["residual_chi2"]) <= 2.0, "chi2_red 过大：%r" % report["residual_chi2"]
     return True
 
 
@@ -403,20 +403,20 @@ def test_report_schema_and_rounding():
     report, ctx = run_case(data)
     if not isinstance(report, dict):
         return False
-    need = {"n_total", "n_used", "dof", "reference_temperature", "coefficients",
-            "std_errors", "corr_a1_a2", "chi2_red", "meta"}
+    need = {"recorded_points", "fitted_points", "degrees_of_freedom", "reference_temperature", "expansion_terms",
+            "term_uncertainties", "slope_intercept_correlation", "residual_chi2", "certificate_note"}
     if not need.issubset(set(report)):
         return False
-    for group in ("coefficients", "std_errors"):
-        for key in ("a0", "a1", "a2"):
+    for group in ("expansion_terms", "term_uncertainties"):
+        for key in ("intercept_um", "slope_um_per_c", "curvature_um_per_c2"):
             v = float(report[group][key])
             if not math.isfinite(v) or abs(v - round(v, 6)) > 1e-12:
                 return False
-    for key in ("corr_a1_a2", "chi2_red"):
+    for key in ("slope_intercept_correlation", "residual_chi2"):
         v = float(report[key])
         if not math.isfinite(v) or abs(v - round(v, 3)) > 1e-12:
             return False
-    if report.get("dof") != report.get("n_used") - 3:
+    if report.get("degrees_of_freedom") != report.get("fitted_points") - 3:
         return False
     raw = open(ctx["out"], encoding="utf-8").read()
     return "NaN" not in raw and "Infinity" not in raw
@@ -431,7 +431,7 @@ def test_rerun_produces_identical_bytes():
     first, ctx1 = run_case(data)
     if first is None:
         return False
-    if not {"n_used", "dof", "chi2_red"}.issubset(set(first)):
+    if not {"fitted_points", "degrees_of_freedom", "residual_chi2"}.issubset(set(first)):
         return False
     body1 = open(ctx1["out"], "rb").read()
     second, ctx2 = run_case(data)

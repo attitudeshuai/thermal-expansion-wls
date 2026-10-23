@@ -34,16 +34,16 @@
 
 ```json
 {
-  "n_total": 241,
-  "n_used": 201,
-  "dof": 198,
+  "recorded_points": 241,
+  "fitted_points": 201,
+  "degrees_of_freedom": 198,
   "reference_temperature": 25.0,
-  "coefficients": {"a0": -0.000477, "a1": 0.600018, "a2": 0.0008},
-  "std_errors": {"a0": 0.000339, "a1": 1.5e-05, "a2": 4.0e-07},
-  "corr_a1_a2": -0.968,
-  "chi2_red": 1.034,
+  "expansion_terms": {"intercept_um": -0.000477, "slope_um_per_c": 0.600018, "curvature_um_per_c2": 0.0008},
+  "term_uncertainties": {"intercept_um": 0.000339, "slope_um_per_c": 1.5e-05, "curvature_um_per_c2": 4.0e-07},
+  "slope_intercept_correlation": -0.968,
+  "residual_chi2": 1.034,
   "error_correlation": 0.0,
-  "meta": {"method": "wls-quadratic", "unit": {"temperature": "degC", "length": "um"}}
+  "certificate_note": {"method": "wls-quadratic", "unit": {"temperature": "degC", "length": "um"}}
 }
 ```
 

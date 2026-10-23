@@ -205,25 +205,25 @@ def analyse(scan):
     corr = cov[1][2] / denom if denom > 0 else 0.0
     chi2 = sse / dof
     return {"beta": beta, "se": se, "corr": corr, "chi2": chi2,
-            "n_total": len(scan["rows"]), "n_used": len(rows), "dof": dof}
+            "recorded_points": len(scan["rows"]), "fitted_points": len(rows), "degrees_of_freedom": dof}
 
 
 def build_report(scan, res):
     return {
-        "n_total": res["n_total"],
-        "n_used": res["n_used"],
-        "dof": res["dof"],
+        "recorded_points": res["recorded_points"],
+        "fitted_points": res["fitted_points"],
+        "degrees_of_freedom": res["degrees_of_freedom"],
         "reference_temperature": scan["t_ref"],
-        "coefficients": {"a0": round(res["beta"][0], 6),
-                         "a1": round(res["beta"][1], 6),
-                         "a2": round(res["beta"][2], 6)},
-        "std_errors": {"a0": round(res["se"][0], 6),
-                       "a1": round(res["se"][1], 6),
-                       "a2": round(res["se"][2], 6)},
-        "corr_a1_a2": round(res["corr"], 3),
-        "chi2_red": round(res["chi2"], 3),
+        "expansion_terms": {"intercept_um": round(res["beta"][0], 6),
+                         "slope_um_per_c": round(res["beta"][1], 6),
+                         "curvature_um_per_c2": round(res["beta"][2], 6)},
+        "term_uncertainties": {"intercept_um": round(res["se"][0], 6),
+                       "slope_um_per_c": round(res["se"][1], 6),
+                       "curvature_um_per_c2": round(res["se"][2], 6)},
+        "slope_intercept_correlation": round(res["corr"], 3),
+        "residual_chi2": round(res["chi2"], 3),
         "error_correlation": round(scan["rho"], 3),
-        "meta": {"method": "gls-quadratic" if scan["rho"] > 0 else "wls-quadratic",
+        "certificate_note": {"method": "gls-quadratic" if scan["rho"] > 0 else "wls-quadratic",
                  "unit": scan["unit"]},
     }
 
