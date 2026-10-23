@@ -8,6 +8,8 @@
 口径：
   · 模型 L = a0 + a1·ΔT + a2·ΔT²，ΔT = T - reference_temperature；
   · 逐点不确定度 sigma 来自仪器，权重取 1/sigma²（异方差时不能当等权处理）；
+· 记录里 fit.error_correlation 给出相邻误差的相关系数 ρ（按 ρ^|i-j| 衰减），
+  非零时是广义最小二乘：协方差 Σ = D·R·D，要先 Cholesky 白化再解正规方程；
   · 恒温保持段：温度与上一点相差小于 plateau_tolerance_c 的采样视为保持点，
     每组连续保持点只保留第一个（其余不带来新信息，还会把权重堆到同一温度上）；
   · 参数协方差 = sigma_hat²·(XᵀWX)⁻¹，sigma_hat² = 加权残差平方和 /(n - 3)；
@@ -49,6 +51,10 @@ def load_data(path):
     if not isinstance(t_ref, (int, float)) or isinstance(t_ref, bool):
         _fail("reference_temperature 要是数值")
     cfg = raw.get("fit") or {}
+    rho = cfg.get("error_correlation", 0.0)
+    if not isinstance(rho, (int, float)) or isinstance(rho, bool) or not (0.0 <= float(rho) < 0.95):
+        _fail("fit.error_correlation 要落在 [0, 0.95)")
+    rho = float(rho)
     tol = cfg.get("plateau_tolerance_c", 0.02)
     min_used = cfg.get("min_used", 10)
     if not isinstance(tol, (int, float)) or isinstance(tol, bool) or float(tol) <= 0:
@@ -72,7 +78,7 @@ def load_data(path):
             _fail("samples[%d].sigma 必须为正" % i)
         rows.append({"t": t, "y": y, "sigma": sig})
     return {"rows": rows, "t_ref": float(t_ref), "tol": float(tol),
-            "min_used": int(min_used), "unit": (raw.get("unit") or {})}
+            "min_used": int(min_used), "unit": (raw.get("unit") or {}), "rho": rho}
 
 
 def keep_plateau_free(rows, tol):
@@ -86,6 +92,47 @@ def keep_plateau_free(rows, tol):
 
 
 # ---------------------------------------------------------------- 线性代数（3x3）
+
+def _cholesky(mat):
+    """下三角 Cholesky 分解；不是正定就返回 None。"""
+    n = len(mat)
+    low = [[0.0] * n for _ in range(n)]
+    for i in range(n):
+        for j in range(i + 1):
+            acc = mat[i][j] - sum(low[i][k] * low[j][k] for k in range(j))
+            if i == j:
+                if acc <= 0:
+                    return None
+                low[i][i] = math.sqrt(acc)
+            else:
+                low[i][j] = acc / low[j][j]
+    return low
+
+
+def _forward_sub(low, vec):
+    n = len(vec)
+    out = [0.0] * n
+    for i in range(n):
+        acc = vec[i] - sum(low[i][k] * out[k] for k in range(i))
+        out[i] = acc / low[i][i]
+    return out
+
+
+def _whiten(columns, sigmas, rho):
+    """把带相关误差的数据白化：先除 sigma，再乘 R 的 Cholesky 逆。"""
+    n = len(sigmas)
+    if rho <= 0.0:
+        return [[c[i] / sigmas[i] for i in range(n)] for c in columns]
+    corr = [[rho ** abs(i - j) for j in range(n)] for i in range(n)]
+    low = _cholesky(corr)
+    if low is None:
+        return None
+    out = []
+    for col in columns:
+        scaled = [col[i] / sigmas[i] for i in range(n)]
+        out.append(_forward_sub(low, scaled))
+    return out
+
 def solve3(a, b):
     m = [row[:] + [b[i]] for i, row in enumerate(a)]
     for col in range(3):
@@ -124,24 +171,31 @@ def analyse(scan):
     if span <= 0:
         _fail("有效点没有温度跨度")
 
+    rho = scan["rho"]
+    sigmas = [r["sigma"] for r in rows]
+    cols_x = [[1.0 for _ in rows],
+              [r["t"] - scan["t_ref"] for r in rows],
+              [(r["t"] - scan["t_ref"]) ** 2 for r in rows]]
+    cols_y = [[r["y"] for r in rows]]
+    white = _whiten(cols_x + cols_y, sigmas, rho)
+    if white is None:
+        _fail("相关系数对应的协方差矩阵不正定，检查 fit.error_correlation")
+    wx0, wx1, wx2, wy = white
+
     xtwx = [[0.0] * 3 for _ in range(3)]
     xtwy = [0.0] * 3
-    for r in rows:
-        dT = r["t"] - scan["t_ref"]
-        x = [1.0, dT, dT * dT]
-        w = 1.0 / (r["sigma"] * r["sigma"])
-        for i in range(3):
-            xtwy[i] += w * x[i] * r["y"]
-            for j in range(3):
-                xtwx[i][j] += w * x[i] * x[j]
+    for i in range(len(rows)):
+        x = [wx0[i], wx1[i], wx2[i]]
+        for a in range(3):
+            xtwy[a] += x[a] * wy[i]
+            for b in range(3):
+                xtwx[a][b] += x[a] * x[b]
     beta = solve3(xtwx, xtwy)
 
     sse = 0.0
-    for r in rows:
-        dT = r["t"] - scan["t_ref"]
-        model = beta[0] + beta[1] * dT + beta[2] * dT * dT
-        w = 1.0 / (r["sigma"] * r["sigma"])
-        sse += w * (r["y"] - model) ** 2
+    for i in range(len(rows)):
+        model = beta[0] * wx0[i] + beta[1] * wx1[i] + beta[2] * wx2[i]
+        sse += (wy[i] - model) ** 2
 
     dof = len(rows) - 3
     var = sse / dof
@@ -168,7 +222,9 @@ def build_report(scan, res):
                        "a2": round(res["se"][2], 6)},
         "corr_a1_a2": round(res["corr"], 3),
         "chi2_red": round(res["chi2"], 3),
-        "meta": {"method": "wls-quadratic", "unit": scan["unit"]},
+        "error_correlation": round(scan["rho"], 3),
+        "meta": {"method": "gls-quadratic" if scan["rho"] > 0 else "wls-quadratic",
+                 "unit": scan["unit"]},
     }
 
 

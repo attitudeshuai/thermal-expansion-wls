@@ -12,7 +12,7 @@
   python3 src/expansion.py --data 记录JSON路径 --out 报告JSON路径
   ```
 
-- 记录结构：`reference_temperature` 是参考温度；`samples` 每点有 `t`（°C）、`L`（长度变化，µm）、`sigma`（该点不确定度，µm）；`fit` 里有 `plateau_tolerance_c`（判定恒温保持的温度容差）与 `min_used`（有效点下限）。
+- 记录结构：`reference_temperature` 是参考温度；`samples` 每点有 `t`（°C）、`L`（长度变化，µm）、`sigma`（该点不确定度，µm）；`fit` 里有 `plateau_tolerance_c`（判定恒温保持的温度容差）、`min_used`（有效点下限）与 `error_correlation`（相邻采样点误差的相关系数 ρ，缺省为 0）。
 
 ## 任务
 
@@ -20,10 +20,13 @@
 
 1. 恒温保持段：温度与上一点相差小于 `plateau_tolerance_c` 的采样视为保持点，**每组连续保持点只保留第一个**，其余剔除、不参与拟合。
 2. 模型：`L = a0 + a1·ΔT + a2·ΔT²`，`ΔT = t - reference_temperature`。
-3. 拟合用**加权最小二乘**，权重取 `1/sigma²`（各点不确定度不同，不能当等权处理）。
-4. 给出参数的标准误：`sigma_hat² = 加权残差平方和 /(n - 3)`，协方差矩阵 `sigma_hat²·(XᵀWX)⁻¹`，标准误取对角线开方。
+3. 拟合口径看 `error_correlation`：
+   - 为 0 时是**加权最小二乘**，权重取 `1/sigma²`（各点不确定度不同，不能当等权处理）；
+   - 不为 0 时误差相关，协方差矩阵是 `Σ = D·R·D`，其中 `D = diag(sigma_i)`、`R_ij = ρ^|i-j|`；
+     这时是**广义最小二乘**：先把每条设计列与观测按 `D` 归一、再用 `R` 的 Cholesky 因子做前代白化，然后解同一个正规方程。
+4. 给出参数的标准误：`sigma_hat² = 残差平方和 /(n - 3)`（这里残差是白化之后的残差），协方差矩阵 `sigma_hat²·(XᵀWX)⁻¹`，`W` 在相关时是 `Σ⁻¹`；标准误取对角线开方。
 5. 给出 `a1` 与 `a2` 的相关系数（由协方差矩阵对应元素归一化）。
-6. 给出 `chi2_red = 加权残差平方和 /(n - 3)`。
+6. 给出 `chi2_red = 白化后残差平方和 /(n - 3)`，并把 `error_correlation` 原样回填到报告里。
 
 ## 输出契约
 
@@ -39,6 +42,7 @@
   "std_errors": {"a0": 0.000339, "a1": 1.5e-05, "a2": 4.0e-07},
   "corr_a1_a2": -0.968,
   "chi2_red": 1.034,
+  "error_correlation": 0.0,
   "meta": {"method": "wls-quadratic", "unit": {"temperature": "degC", "length": "um"}}
 }
 ```

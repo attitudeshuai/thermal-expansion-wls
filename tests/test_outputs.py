@@ -16,16 +16,18 @@ APP = os.environ.get("CT_APP_DIR", "/app")
 ENTRY = os.path.join(APP, "src", "expansion.py")
 
 WEIGHTS = {
-    "test_coefficients_match_independent_wls": 0.16,
-    "test_std_errors_reflect_point_weights": 0.15,
-    "test_plateau_run_kept_once_only": 0.11,
-    "test_second_dataset_with_other_range": 0.12,
-    "test_chi2_reduced_near_unity": 0.09,
-    "test_corr_a1_a2_matches_independent": 0.09,
-    "test_invalid_data_rejected_without_output": 0.11,
+    "test_coefficients_match_independent_wls": 0.10,
+    "test_std_errors_reflect_point_weights": 0.09,
+    "test_plateau_run_kept_once_only": 0.08,
+    "test_second_dataset_with_other_range": 0.07,
+    "test_chi2_reduced_near_unity": 0.05,
+    "test_corr_a1_a2_matches_independent": 0.06,
+    "test_correlated_errors_use_gls": 0.12,
+    "test_correlated_errors_std_error_matches_gls": 0.16,
+    "test_invalid_data_rejected_without_output": 0.08,
     "test_report_schema_and_rounding": 0.07,
-    "test_rerun_produces_identical_bytes": 0.05,
-    "test_failed_run_keeps_previous_report": 0.05,
+    "test_rerun_produces_identical_bytes": 0.06,
+    "test_failed_run_keeps_previous_report": 0.06,
 }
 
 
@@ -40,7 +42,7 @@ class _Lcg(object):
 
 def make_data(a1=0.600, a2=0.0008, a0=0.0, t_ref=25.0, t_start=25.0, t_end=225.0,
               step=1.0, plateau_at=120.0, plateau_len=40, sigma_lo=0.003, sigma_hi=0.003,
-              seed=101):
+              rho=0.0, seed=101):
     rng = _Lcg(seed)
     temps = []
     t = t_start
@@ -51,17 +53,24 @@ def make_data(a1=0.600, a2=0.0008, a0=0.0, t_ref=25.0, t_start=25.0, t_end=225.0
     pos = min(range(len(temps)), key=lambda k: abs(temps[k] - plateau_at))
     temps = temps[:pos] + plateau + temps[pos:]
     span = max(temps) - min(temps)
+    # 相关噪声：e_i = sqrt(1-ρ²)·ρ^i·g_0 + 白噪声（相邻误差按 ρ 衰减）
+    gauss = [(rng.next_u() + rng.next_u() - 1.0) * math.sqrt(6.0) for _ in temps]
     samples = []
-    for temp in temps:
+    common = 0.0
+    for idx, temp in enumerate(temps):
         frac = (temp - min(temps)) / span if span else 0.0
         sigma = sigma_lo + (sigma_hi - sigma_lo) * frac
         dT = temp - t_ref
-        noise = (rng.next_u() + rng.next_u() - 1.0) * math.sqrt(6.0) * sigma   # std 恰为 sigma
+        if rho > 0:
+            common = rho * common + math.sqrt(max(1.0 - rho * rho, 0.0)) * gauss[idx]
+            noise = common * sigma
+        else:
+            noise = gauss[idx] * sigma
         y = a0 + a1 * dT + a2 * dT * dT + noise
         samples.append({"t": temp, "L": round(y, 6), "sigma": round(sigma, 6)})
     return {"unit": {"temperature": "degC", "length": "um"},
             "reference_temperature": t_ref, "samples": samples,
-            "fit": {"plateau_tolerance_c": 0.02, "min_used": 10}}
+            "fit": {"plateau_tolerance_c": 0.02, "min_used": 10, "error_correlation": rho}}
 
 
 def _keep(rows, tol):
@@ -98,33 +107,75 @@ def _inv3(a):
     return inv
 
 
+
+def _chol(mat):
+    n = len(mat)
+    low = [[0.0] * n for _ in range(n)]
+    for i in range(n):
+        for j in range(i + 1):
+            acc = mat[i][j] - sum(low[i][k] * low[j][k] for k in range(j))
+            if i == j:
+                if acc <= 0:
+                    return None
+                low[i][i] = math.sqrt(acc)
+            else:
+                low[i][j] = acc / low[j][j]
+    return low
+
+
+def _fsub(low, vec):
+    n = len(vec)
+    out = [0.0] * n
+    for i in range(n):
+        acc = vec[i] - sum(low[i][k] * out[k] for k in range(i))
+        out[i] = acc / low[i][i]
+    return out
+
+
+def _whiten(cols, sigmas, rho):
+    n = len(sigmas)
+    if rho <= 0:
+        return [[c[i] / sigmas[i] for i in range(n)] for c in cols]
+    corr = [[rho ** abs(i - j) for j in range(n)] for i in range(n)]
+    low = _chol(corr)
+    if low is None:
+        return None
+    return [_fsub(low, [c[i] / sigmas[i] for i in range(n)]) for c in cols]
+
 def expect(data):
     t_ref = float(data["reference_temperature"])
     rows = _keep([{"t": float(s["t"]), "y": float(s["L"]), "s": float(s["sigma"])}
                   for s in data["samples"]], float(data["fit"]["plateau_tolerance_c"]))
+    rho = float((data.get("fit") or {}).get("error_correlation", 0.0) or 0.0)
+    sigmas = [r["s"] for r in rows]
+    cols = [[1.0 for _ in rows],
+            [r["t"] - t_ref for r in rows],
+            [(r["t"] - t_ref) ** 2 for r in rows],
+            [r["y"] for r in rows]]
+    white = _whiten(cols, sigmas, rho)
+    if white is None:
+        raise AssertionError("相关系数导致协方差矩阵不正定")
+    w0, w1, w2, wy = white
     xtwx = [[0.0] * 3 for _ in range(3)]
     xtwy = [0.0] * 3
-    for r in rows:
-        dT = r["t"] - t_ref
-        x = [1.0, dT, dT * dT]
-        w = 1.0 / (r["s"] * r["s"])
-        for i in range(3):
-            xtwy[i] += w * x[i] * r["y"]
-            for j in range(3):
-                xtwx[i][j] += w * x[i] * x[j]
+    for i in range(len(rows)):
+        x = [w0[i], w1[i], w2[i]]
+        for a in range(3):
+            xtwy[a] += x[a] * wy[i]
+            for b in range(3):
+                xtwx[a][b] += x[a] * x[b]
     beta = _solve3(xtwx, xtwy)
     sse = 0.0
-    for r in rows:
-        dT = r["t"] - t_ref
-        m = beta[0] + beta[1] * dT + beta[2] * dT * dT
-        sse += (r["y"] - m) ** 2 / (r["s"] * r["s"])
+    for i in range(len(rows)):
+        m = beta[0] * w0[i] + beta[1] * w1[i] + beta[2] * w2[i]
+        sse += (wy[i] - m) ** 2
     dof = len(rows) - 3
     var = sse / dof
     cov = [[var * v for v in row] for row in _inv3(xtwx)]
     se = [math.sqrt(max(cov[i][i], 0.0)) for i in range(3)]
     corr = cov[1][2] / math.sqrt(cov[1][1] * cov[2][2])
     return {"beta": beta, "se": se, "corr": corr, "chi2": sse / dof,
-            "n_used": len(rows), "dof": dof}
+            "n_used": len(rows), "dof": dof, "rho": rho}
 
 
 def _run(path, out_path, timeout=240):
@@ -274,6 +325,44 @@ def test_corr_a1_a2_matches_independent():
     except (KeyError, TypeError, ValueError):
         return False
     return abs(got - exp["corr"]) <= 0.01
+
+
+def test_correlated_errors_use_gls():
+    """题面原文：「fit.error_correlation 给出相邻误差的相关系数 ρ……非零时是广义最小二乘」。
+
+    ρ=0.6 的数据上，报告斜率必须与独立 GLS 相差不超过 1%，并且报告里回填了 error_correlation。
+    把相关误差当成独立误差（普通加权最小二乘）会明显偏。
+    """
+    data = make_data(sigma_lo=0.004, sigma_hi=0.010, rho=0.6, seed=211)
+    report, _ = run_case(data)
+    exp = expect(data)
+    a1 = float(report["coefficients"]["a1"])
+    assert abs(a1 - exp["beta"][1]) <= 0.01 * abs(exp["beta"][1]), \
+        "GLS 斜率没对上：被测 %r，独立复算 %r" % (a1, exp["beta"][1])
+    chi2 = float(report["chi2_red"])
+    assert abs(chi2 - exp["chi2"]) <= 0.03 * exp["chi2"], \
+        "chi2_red 没在白化后的残差上算：被测 %r，独立复算 %r" % (chi2, exp["chi2"])
+    assert abs(float(report["error_correlation"]) - 0.6) <= 1e-9, \
+        "报告没回填 error_correlation：%r" % report.get("error_correlation")
+    return True
+
+
+def test_correlated_errors_std_error_matches_gls():
+    """题面原文：「参数协方差 = sigma_hat²·(XᵀWX)⁻¹」——相关误差下 W 换成 Σ⁻¹。
+
+    ρ=0.6 时斜率的标准不确定度与独立 GLS 相差不超过 2%，且 chi2_red 仍在噪声量级。
+    """
+    data = make_data(sigma_lo=0.004, sigma_hi=0.010, rho=0.6, seed=307)
+    report, _ = run_case(data)
+    exp = expect(data)
+    se1 = float(report["std_errors"]["a1"])
+    assert abs(se1 - exp["se"][1]) <= 0.02 * abs(exp["se"][1]), \
+        "GLS 斜率标准误没对上：被测 %r，独立复算 %r" % (se1, exp["se"][1])
+    wls = expect(make_data(sigma_lo=0.004, sigma_hi=0.010, rho=0.0, seed=307))
+    assert se1 > 1.3 * wls["se"][1], \
+        "相关误差下标准误没放大（当成独立误差了）：被测 %r，独立误差基线 %r" % (se1, wls["se"][1])
+    assert float(report["chi2_red"]) <= 2.0, "chi2_red 过大：%r" % report["chi2_red"]
+    return True
 
 
 def test_invalid_data_rejected_without_output():
