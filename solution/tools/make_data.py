@@ -1,9 +1,10 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""生成膨胀仪升温记录（二次多项式 + 逐点不确定度 + 恒温保持段）。
+"""生成膨胀仪升温记录（二次多项式 + 相变台阶 + 逐点不确定度 + 恒温保持段）。
 
 数据口径：业务模型 + 确定性生成规则（固定伪随机序列，不用真随机）——
-  L = a0 + a1·(T - T_ref) + a2·(T - T_ref)²，逐点叠加按 sigma 缩放的伪随机误差；
+  L = a0 + a1·(T - T_ref) + a2·(T - T_ref)² + A·S((T - Tc)/w)，
+  S 是 logistic 台阶（相变点上的长度突变），逐点叠加按 sigma 缩放的伪随机误差；
   sigma 可以是常数，也可以随温度变化（模拟高温端噪声变大）；
   中间有一段控温平台（温度重复），需要按规则剔除。
 """
@@ -21,9 +22,9 @@ class Lcg(object):
         return (self.state % 1000003) / 1000003.0
 
 
-def make_data(a1=0.600, a2=0.0008, a0=0.0, t_ref=25.0, t_start=25.0, t_end=225.0,
-              step=1.0, plateau_at=120.0, plateau_len=40, sigma_lo=0.003, sigma_hi=0.003,
-              seed=20261025):
+def make_data(a1=0.600, a2=0.0008, a0=0.0, a_step=2.2, tc=180.0, width=1.0,
+              t_ref=25.0, t_start=25.0, t_end=400.0, step=1.0, plateau_at=120.0,
+              plateau_len=40, sigma_lo=0.003, sigma_hi=0.006, seed=20261025):
     rng = Lcg(seed)
     temps = []
     t = t_start
@@ -41,7 +42,9 @@ def make_data(a1=0.600, a2=0.0008, a0=0.0, t_ref=25.0, t_start=25.0, t_end=225.0
         sigma = sigma_lo + (sigma_hi - sigma_lo) * frac
         dT = temp - t_ref
         noise = (rng.next_u() + rng.next_u() - 1.0) * math.sqrt(6.0) * sigma   # std 恰为 sigma
-        y = a0 + a1 * dT + a2 * dT * dT + noise
+        z = (temp - tc) / width
+        step_value = 1.0 / (1.0 + math.exp(-z))
+        y = a0 + a1 * dT + a2 * dT * dT + a_step * step_value + noise
         samples.append({"t": temp, "L": round(y, 6), "sigma": round(sigma, 6)})
 
     return {
@@ -49,8 +52,9 @@ def make_data(a1=0.600, a2=0.0008, a0=0.0, t_ref=25.0, t_start=25.0, t_end=225.0
         "reference_temperature": t_ref,
         "samples": samples,
         "inspection": {"slope_nominal_um_per_c": 0.600, "slope_tolerance_pct": 1.0,
-                       "max_residual_chi2": 1.5},
-        "fit": {"plateau_tolerance_c": 0.02, "min_used": 10,
+                       "max_residual_chi2": 1.5, "midpoint_nominal_c": 180.0,
+                       "midpoint_tolerance_c": 3.0},
+        "fit": {"plateau_tolerance_c": 0.02, "min_used": 12,
                 "error_correlation": 0.0, "common_mode_sigma": 0.0},
     }
 

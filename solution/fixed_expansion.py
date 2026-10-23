@@ -1,22 +1,21 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""膨胀仪升温曲线复核：加权最小二乘拟合二次膨胀式与参数不确定度。
+"""膨胀仪升温曲线复核：加权二次 + 相变台阶的广义最小二乘，含参数不确定度与首件判定。
 
 命令行：
     python3 src/expansion.py --data data/dilatometer.json --out out/report.json
 
 口径：
-  · 模型 L = a0 + a1·ΔT + a2·ΔT²，ΔT = T - reference_temperature；
-  · 逐点不确定度 sigma 来自仪器，权重取 1/sigma²（异方差时不能当等权处理）；
-· 协方差矩阵是 Σ = D·R·D + τ²·J：D 为逐点标准差、R_ij = ρ^|i-j|、τ 是共模项
-  （fit.common_mode_sigma，所有温度点一起上下漂的那部分），必须整体 Cholesky 白化；
-· 记录里 fit.error_correlation 给出相邻误差的相关系数 ρ（按 ρ^|i-j| 衰减），
-  非零时是广义最小二乘：协方差 Σ = D·R·D，要先 Cholesky 白化再解正规方程；
-  · 恒温保持段：温度与上一点相差小于 plateau_tolerance_c 的采样视为保持点，
-    每组连续保持点只保留第一个（其余不带来新信息，还会把权重堆到同一温度上）；
-  · 参数协方差 = sigma_hat²·(XᵀWX)⁻¹，sigma_hat² = 加权残差平方和 /(n - 3)；
-  · chi2_red = 加权残差平方和 /(n - 3)；
-  · a1、a2 的相关系数取协方差矩阵对应元素归一化；
+  · 模型 L(ΔT) = a0 + a1·ΔT + a2·ΔT² + A·S((ΔT − Tc)/w)，ΔT = t − reference_temperature，
+    S(z) = 1/(1+exp(−z)) 是相变台阶（Tc 中点、w 宽度、A 台阶高度）；
+  · 给定 Tc 与 w 时 [a0, a1, a2, A] 是线性的，所以先在 (Tc, w) 上粗定位、再逐个细化；
+  · 协方差矩阵是 Σ = D·R·D + τ²·J：D 为逐点标准差、R_ij = ρ^|i-j|、τ 是共模项
+    （fit.common_mode_sigma）；ρ 或 τ 非零时整体 Cholesky 白化，再在白化空间里解正规方程；
+  · 恒温保持段：温度与上一点相差小于 plateau_tolerance_c 的采样视为保持点，每组只留第一个；
+  · 参数协方差 = sigma_hat²·(JᵀJ)⁻¹（白化空间的 6 列雅可比，含 Tc、w 两列），
+    sigma_hat² = 白化残差平方和 /(n − 6)；标准误取对角线开方；
+  · chi2_red = 白化残差平方和 /(n − 6)，error_correlation 与 common_mode_sigma 原样回填；
+  · 首件判定按 inspection 段三项：斜率相对标称值的偏离百分比、chi2_red、相变中点偏差；
   · 输出先写临时文件再原子替换；非法输入以退出码 2 结束且不落文件。
 """
 from __future__ import annotations
@@ -29,6 +28,7 @@ import sys
 import tempfile
 
 EXIT_INVALID = 2
+NPAR = 6
 
 
 def _fail(msg):
@@ -65,8 +65,8 @@ def load_data(path):
     min_used = cfg.get("min_used", 10)
     if not isinstance(tol, (int, float)) or isinstance(tol, bool) or float(tol) <= 0:
         _fail("fit.plateau_tolerance_c 要是正数")
-    if not isinstance(min_used, int) or isinstance(min_used, bool) or min_used < 6:
-        _fail("fit.min_used 要是不小于 6 的整数")
+    if not isinstance(min_used, int) or isinstance(min_used, bool) or min_used < 12:
+        _fail("fit.min_used 要是不小于 12 的整数")
 
     insp = raw.get("inspection")
     if not isinstance(insp, dict):
@@ -74,13 +74,17 @@ def load_data(path):
     slope_nominal = insp.get("slope_nominal_um_per_c")
     slope_tol = insp.get("slope_tolerance_pct", 1.0)
     chi2_limit = insp.get("max_residual_chi2", 1.5)
+    mid_nominal = insp.get("midpoint_nominal_c")
+    mid_tol = insp.get("midpoint_tolerance_c", 3.0)
     for name, val in (("slope_nominal_um_per_c", slope_nominal),
                       ("slope_tolerance_pct", slope_tol),
-                      ("max_residual_chi2", chi2_limit)):
+                      ("max_residual_chi2", chi2_limit),
+                      ("midpoint_nominal_c", mid_nominal),
+                      ("midpoint_tolerance_c", mid_tol)):
         if not isinstance(val, (int, float)) or isinstance(val, bool) or not math.isfinite(float(val)):
             _fail("inspection.%s 要是有限数值" % name)
-    if float(slope_tol) <= 0 or float(chi2_limit) <= 0:
-        _fail("inspection 的容差与残差上限都要为正")
+    if float(slope_tol) <= 0 or float(chi2_limit) <= 0 or float(mid_tol) <= 0:
+        _fail("inspection 的容差与上限都要为正")
     rows = []
     for i, s in enumerate(samples):
         if not isinstance(s, dict):
@@ -97,9 +101,10 @@ def load_data(path):
             _fail("samples[%d].sigma 必须为正" % i)
         rows.append({"t": t, "y": y, "sigma": sig})
     return {"rows": rows, "t_ref": float(t_ref), "tol": float(tol),
-            "min_used": int(min_used), "unit": (raw.get("unit") or {}), "rho": rho, "common": common,
-            "slope_nominal": float(slope_nominal), "slope_tol": float(slope_tol),
-            "chi2_limit": float(chi2_limit)}
+            "min_used": int(min_used), "unit": (raw.get("unit") or {}), "rho": rho,
+            "common": common, "slope_nominal": float(slope_nominal),
+            "slope_tol": float(slope_tol), "chi2_limit": float(chi2_limit),
+            "mid_nominal": float(mid_nominal), "mid_tol": float(mid_tol)}
 
 
 def keep_plateau_free(rows, tol):
@@ -112,10 +117,15 @@ def keep_plateau_free(rows, tol):
     return kept
 
 
-# ---------------------------------------------------------------- 线性代数（3x3）
+def logistic(z):
+    if z >= 0.0:
+        e = math.exp(-z)
+        return 1.0 / (1.0 + e)
+    e = math.exp(z)
+    return e / (1.0 + e)
+
 
 def _cholesky(mat):
-    """下三角 Cholesky 分解；不是正定就返回 None。"""
     n = len(mat)
     low = [[0.0] * n for _ in range(n)]
     for i in range(n):
@@ -139,14 +149,11 @@ def _forward_sub(low, vec):
     return out
 
 
-def _whiten(columns, sigmas, rho, common=0.0):
-    """按 Σ = D·R·D + τ²·J 白化：直接对协方差矩阵做 Cholesky，再前代消元。
-
-    D 是逐点标准差的斜对角，R 是 ρ^|i-j| 的相关阵，最后一项是共模误差（所有点一起上下漂）。
-    """
+def _build_whitener(sigmas, rho, common):
+    """返回一个把列向量白化的函数（Σ = D·R·D + τ²·J）。"""
     n = len(sigmas)
     if rho <= 0.0 and common <= 0.0:
-        return [[c[i] / sigmas[i] for i in range(n)] for c in columns]
+        return lambda vec: [vec[i] / sigmas[i] for i in range(n)]
     cov = [[0.0] * n for _ in range(n)]
     for i in range(n):
         for j in range(n):
@@ -154,40 +161,57 @@ def _whiten(columns, sigmas, rho, common=0.0):
     low = _cholesky(cov)
     if low is None:
         return None
-    out = []
-    for col in columns:
-        out.append(_forward_sub(low, list(col)))
-    return out
+
+    def whiten(vec):
+        return _forward_sub(low, list(vec))
+
+    return whiten
 
 
-def solve3(a, b):
-    m = [row[:] + [b[i]] for i, row in enumerate(a)]
-    for col in range(3):
-        piv = max(range(col, 3), key=lambda r: abs(m[r][col]))
+def solve_linear(a, b):
+    n = len(a)
+    m = [a[i][:] + [b[i]] for i in range(n)]
+    for col in range(n):
+        piv = max(range(col, n), key=lambda r: abs(m[r][col]))
         if abs(m[piv][col]) < 1e-14:
-            _fail("设计矩阵奇异，拟合窗口里温度跨度不足")
+            return None
         m[col], m[piv] = m[piv], m[col]
         pv = m[col][col]
-        for k in range(col, 4):
+        for k in range(col, n + 1):
             m[col][k] /= pv
-        for r in range(3):
+        for r in range(n):
             if r == col:
                 continue
             f = m[r][col]
             if f:
-                for k in range(col, 4):
+                for k in range(col, n + 1):
                     m[r][k] -= f * m[col][k]
-    return [m[0][3], m[1][3], m[2][3]]
+    return [m[i][n] for i in range(n)]
 
 
-def inverse3(a):
-    inv = [[0.0] * 3 for _ in range(3)]
-    for j in range(3):
-        e = [1.0 if i == j else 0.0 for i in range(3)]
-        col = solve3(a, e)
-        for i in range(3):
+def inverse_n(a):
+    n = len(a)
+    inv = [[0.0] * n for _ in range(n)]
+    for j in range(n):
+        col = solve_linear(a, [1.0 if i == j else 0.0 for i in range(n)])
+        if col is None:
+            return None
+        for i in range(n):
             inv[i][j] = col[i]
     return inv
+
+
+def _normal_equations(cols, y):
+    npar = len(cols)
+    xtx = [[0.0] * npar for _ in range(npar)]
+    xty = [0.0] * npar
+    for i in range(len(y)):
+        for a in range(npar):
+            ca = cols[a][i]
+            xty[a] += ca * y[i]
+            for b in range(npar):
+                xtx[a][b] += ca * cols[b][i]
+    return xtx, xty
 
 
 def analyse(scan):
@@ -198,61 +222,134 @@ def analyse(scan):
     if span <= 0:
         _fail("有效点没有温度跨度")
 
-    rho = scan["rho"]
+    t_ref = scan["t_ref"]
+    dt = [r["t"] - t_ref for r in rows]
+    ts = [r["t"] for r in rows]
+    ys = [r["y"] for r in rows]
     sigmas = [r["sigma"] for r in rows]
-    cols_x = [[1.0 for _ in rows],
-              [r["t"] - scan["t_ref"] for r in rows],
-              [(r["t"] - scan["t_ref"]) ** 2 for r in rows]]
-    cols_y = [[r["y"] for r in rows]]
-    white = _whiten(cols_x + cols_y, sigmas, rho, scan["common"])
-    if white is None:
-        _fail("相关系数对应的协方差矩阵不正定，检查 fit.error_correlation")
-    wx0, wx1, wx2, wy = white
+    whiten = _build_whitener(sigmas, scan["rho"], scan["common"])
+    if whiten is None:
+        _fail("协方差矩阵不正定，检查 fit.error_correlation / fit.common_mode_sigma")
 
-    xtwx = [[0.0] * 3 for _ in range(3)]
-    xtwy = [0.0] * 3
-    for i in range(len(rows)):
-        x = [wx0[i], wx1[i], wx2[i]]
-        for a in range(3):
-            xtwy[a] += x[a] * wy[i]
-            for b in range(3):
-                xtwx[a][b] += x[a] * x[b]
-    beta = solve3(xtwx, xtwy)
+    wx0 = whiten([1.0] * len(rows))
+    wx1 = whiten(dt)
+    wx2 = whiten([v * v for v in dt])
+    wy = whiten(ys)
+    base_cols = [wx0, wx1, wx2]
 
-    sse = 0.0
-    for i in range(len(rows)):
-        model = beta[0] * wx0[i] + beta[1] * wx1[i] + beta[2] * wx2[i]
-        sse += (wy[i] - model) ** 2
+    def sse_for(tc, width):
+        step = whiten([logistic((v - tc) / width) for v in ts])
+        cols = base_cols + [step]
+        xtx, xty = _normal_equations(cols, wy)
+        coef = solve_linear(xtx, xty)
+        if coef is None:
+            return None, None
+        sse = 0.0
+        for i in range(len(wy)):
+            model = coef[0] * wx0[i] + coef[1] * wx1[i] + coef[2] * wx2[i] + coef[3] * step[i]
+            d = wy[i] - model
+            sse += d * d
+        return coef, sse
 
-    dof = len(rows) - 3
+    lo_t = min(r["t"] for r in rows)
+    hi_t = max(r["t"] for r in rows)
+    best = None
+    tc_grid = [lo_t + (hi_t - lo_t) * i / 24.0 for i in range(25)]
+    width_grid = [0.5, 1.0, 1.5, 2.0, 3.0, 4.5, 6.0, 8.0, 11.0, 15.0]
+    for tc in tc_grid:
+        for width in width_grid:
+            coef, sse = sse_for(tc, width)
+            if sse is None:
+                continue
+            if best is None or sse < best[0]:
+                best = (sse, tc, width)
+    if best is None:
+        _fail("相变台阶拟合没找到可行解")
+
+    def golden(fn, lo, hi, iters=60):
+        phi = (math.sqrt(5.0) - 1.0) / 2.0
+        a, b = lo, hi
+        c = b - phi * (b - a)
+        d = a + phi * (b - a)
+        fc, fd = fn(c), fn(d)
+        for _ in range(iters):
+            if fc <= fd:
+                b, d, fd = d, c, fc
+                c = b - phi * (b - a)
+                fc = fn(c)
+            else:
+                a, c, fc = c, d, fd
+                d = a + phi * (b - a)
+                fd = fn(d)
+        return (a + b) / 2.0
+
+    sse_best, tc_best, w_best = best
+    for _ in range(3):
+        def f_tc(x):
+            _, s = sse_for(x, w_best)
+            return float("inf") if s is None else s
+
+        def f_w(x):
+            _, s = sse_for(tc_best, x)
+            return float("inf") if s is None else s
+
+        tc_best = golden(f_tc, tc_best - 6.0, tc_best + 6.0)
+        w_hi = max(1.0, w_best * 2.0)
+        w_lo = max(0.2, w_best / 2.0)
+        w_best = golden(f_w, w_lo, w_hi)
+        _, sse_best = sse_for(tc_best, w_best)
+
+    coef, sse = sse_for(tc_best, w_best)
+    if coef is None:
+        _fail("最终拟合解不出来，检查记录")
+
+    n = len(rows)
+    dof = n - NPAR
+    if dof <= 0:
+        _fail("有效点太少，自由度不够")
     var = sse / dof
-    cov = [[var * v for v in row] for row in inverse3(xtwx)]
-    se = [math.sqrt(max(cov[i][i], 0.0)) for i in range(3)]
+
+    step = whiten([logistic((v - tc_best) / w_best) for v in ts])
+    j_cols = [wx0, wx1, wx2, step]
+    dstep_dtc = [(-logistic((v - tc_best) / w_best) * (1.0 - logistic((v - tc_best) / w_best)) / w_best)
+                 for v in ts]
+    dstep_dw = [(-logistic((v - tc_best) / w_best) * (1.0 - logistic((v - tc_best) / w_best))
+                 * (v - tc_best) / (w_best * w_best)) for v in ts]
+    j_cols.append(whiten([coef[3] * v for v in dstep_dtc]))
+    j_cols.append(whiten([coef[3] * v for v in dstep_dw]))
+    xtx, _ = _normal_equations(j_cols, wy)
+    inv = inverse_n(xtx)
+    if inv is None:
+        _fail("雅可比矩阵奇异，无法给出参数不确定度")
+    cov = [[var * inv[i][j] for j in range(NPAR)] for i in range(NPAR)]
+    se = [math.sqrt(max(cov[i][i], 0.0)) for i in range(NPAR)]
     denom = math.sqrt(cov[1][1] * cov[2][2])
     corr = cov[1][2] / denom if denom > 0 else 0.0
-    chi2 = sse / dof
-    return {"beta": beta, "se": se, "corr": corr, "chi2": chi2,
-            "recorded_points": len(scan["rows"]), "fitted_points": len(rows), "degrees_of_freedom": dof}
 
+    return {"beta": coef[:4], "tc": tc_best, "width": w_best, "se": se, "corr": corr,
+            "chi2": sse / dof, "recorded_points": len(scan["rows"]), "fitted_points": n,
+            "degrees_of_freedom": dof}
 
 
 def evaluate(scan, res):
     """按 inspection 里的规则逐项判定，返回 (verdict, checks)。"""
-    slope_nominal = float(scan["slope_nominal"])
-    slope_tol = float(scan["slope_tol"])
-    chi2_limit = float(scan["chi2_limit"])
+    slope_nominal = scan["slope_nominal"]
+    slope_tol = scan["slope_tol"]
+    chi2_limit = scan["chi2_limit"]
     slope = res["beta"][1]
     dev_pct = abs(slope - slope_nominal) / slope_nominal * 100.0
     chi2 = res["chi2"]
+    mid_dev = abs(res["tc"] - scan["mid_nominal"])
     checks = [
         {"name": "slope_vs_nominal", "value": round(dev_pct, 4),
          "limit": round(slope_tol, 4), "passed": dev_pct <= slope_tol},
         {"name": "residual_chi2", "value": round(chi2, 4),
          "limit": round(chi2_limit, 4), "passed": chi2 <= chi2_limit},
+        {"name": "midpoint_vs_nominal", "value": round(mid_dev, 4),
+         "limit": round(scan["mid_tol"], 4), "passed": mid_dev <= scan["mid_tol"]},
     ]
     verdict = "ACCEPT" if all(item["passed"] for item in checks) else "REJECT"
     return verdict, checks
-
 
 
 def build_report(scan, res):
@@ -263,19 +360,26 @@ def build_report(scan, res):
         "degrees_of_freedom": res["degrees_of_freedom"],
         "reference_temperature": scan["t_ref"],
         "expansion_terms": {"intercept_um": round(res["beta"][0], 6),
-                         "slope_um_per_c": round(res["beta"][1], 6),
-                         "curvature_um_per_c2": round(res["beta"][2], 6)},
+                            "slope_um_per_c": round(res["beta"][1], 6),
+                            "curvature_um_per_c2": round(res["beta"][2], 6)},
+        "transition_terms": {"midpoint_c": round(res["tc"], 3),
+                             "width_c": round(res["width"], 3),
+                             "amplitude_um": round(res["beta"][3], 6)},
         "term_uncertainties": {"intercept_um": round(res["se"][0], 6),
-                       "slope_um_per_c": round(res["se"][1], 6),
-                       "curvature_um_per_c2": round(res["se"][2], 6)},
+                               "slope_um_per_c": round(res["se"][1], 6),
+                               "curvature_um_per_c2": round(res["se"][2], 6)},
+        "transition_uncertainties": {"midpoint_c": round(res["se"][4], 3),
+                                     "width_c": round(res["se"][5], 3),
+                                     "amplitude_um": round(res["se"][3], 6)},
         "slope_intercept_correlation": round(res["corr"], 3),
         "residual_chi2": round(res["chi2"], 3),
         "error_correlation": round(scan["rho"], 3),
         "common_mode_sigma": round(scan["common"], 6),
         "verdict": verdict,
         "checks": checks,
-        "certificate_note": {"method": "gls-quadratic" if (scan["rho"] > 0 or scan["common"] > 0) else "wls-quadratic",
-                            "unit": scan["unit"]},
+        "certificate_note": {
+            "method": "gls-transition" if (scan["rho"] > 0 or scan["common"] > 0) else "wls-transition",
+            "unit": scan["unit"]},
     }
 
 

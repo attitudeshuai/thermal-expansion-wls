@@ -5,51 +5,59 @@
   ],
   "tests": {
     "test_outputs.py::test_coefficients_match_independent_wls": {
-      "weight": 0.085,
-      "rationale": "核心拟合：三个系数必须与独立的加权复算吻合，起点程序的普通最小二乘在这里就掉分"
+      "weight": 0.071,
+      "rationale": "核心：二次项三系数必须与独立的加权/广义最小二乘复算吻合，起点程序那条普通最小二乘在这里掉分"
+    },
+    "test_outputs.py::test_transition_terms_match_independent": {
+      "weight": 0.074,
+      "rationale": "相变台阶中点、宽度与高度从数据里反演出来，且中点是真值附近"
+    },
+    "test_outputs.py::test_transition_uncertainties_reported": {
+      "weight": 0.071,
+      "rationale": "协方差的雅可比要含 Tc、w 两列；只对线性参数求协方差的写法会让这三个标准误偏小"
     },
     "test_outputs.py::test_std_errors_reflect_point_weights": {
-      "weight": 0.075,
-      "rationale": "加权口径的量化收益：标准误要反映 1/sigma² 权重，等权处理会差出好几倍"
+      "weight": 0.06,
+      "rationale": "加权口径的量化收益：标准误要反映 1/sigma² 权重"
     },
     "test_outputs.py::test_plateau_run_kept_once_only": {
-      "weight": 0.045,
+      "weight": 0.04,
       "rationale": "恒温保持段剔除规则，去重做错会同时把拟合点数与系数带偏"
     },
     "test_outputs.py::test_second_dataset_with_other_range": {
-      "weight": 0.055,
-      "rationale": "换升温范围、系数与噪声水平后仍要吻合，挡写死样例值的做法"
+      "weight": 0.049,
+      "rationale": "换升温范围、系数、相变点与噪声水平后仍要吻合，挡写死样例值的做法"
     },
     "test_outputs.py::test_chi2_reduced_near_unity": {
-      "weight": 0.04,
-      "rationale": "卡方统计量口径：白化后残差平方和除以自由度，且要落在噪声量级"
+      "weight": 0.034,
+      "rationale": "卡方统计量口径：白化残差平方和除以自由度 n-6"
     },
     "test_outputs.py::test_corr_a1_a2_matches_independent": {
-      "weight": 0.04,
-      "rationale": "参数相关系数由协方差矩阵对应元素归一化，检验协方差矩阵算得对不对"
+      "weight": 0.034,
+      "rationale": "参数相关系数由协方差矩阵对应元素归一化"
     },
     "test_outputs.py::test_correlated_errors_std_error_matches_gls": {
-      "weight": 0.09,
+      "weight": 0.071,
       "rationale": "相关误差下标准误必须放大，用来区分真的用了 Σ⁻¹ 还是当成独立误差"
     },
     "test_outputs.py::test_common_mode_error_handled": {
-      "weight": 0.09,
+      "weight": 0.071,
       "rationale": "共模误差项必须进协方差矩阵，漏掉时斜率与标准误都会偏"
     },
     "test_outputs.py::test_exactly_min_used_points_accepted": {
-      "weight": 0.08,
-      "rationale": "边界值：有效点恰好等于 min_used 必须照算，不能按少于处理"
+      "weight": 0.063,
+      "rationale": "边界值：有效点恰好等于 min_used 必须照算"
     },
     "test_outputs.py::test_one_minus_min_used_rejected": {
-      "weight": 0.08,
+      "weight": 0.063,
       "rationale": "边界值：有效点比 min_used 少一个必须拒收，且不留证书、stderr 有说明"
     },
     "test_outputs.py::test_huge_sigma_point_barely_moves_fit": {
-      "weight": 0.07,
-      "rationale": "单点大不确定度必须被权重压下去，检验权重是否真按 1/sigma² 施加"
+      "weight": 0.051,
+      "rationale": "单点大不确定度必须被权重压下去"
     },
     "test_outputs.py::test_invalid_data_rejected_without_output": {
-      "weight": 0.06,
+      "weight": 0.051,
       "rationale": "四类坏记录的拒收与副作用：退出码、stderr 说明、不落证书、不留临时文件"
     },
     "test_outputs.py::test_report_schema_and_rounding": {
@@ -58,27 +66,31 @@
     },
     "test_outputs.py::test_rerun_produces_identical_bytes": {
       "weight": 0.02,
-      "rationale": "同一份台账重复运行要逐字节一致，报告里不许出现生成时间"
+      "rationale": "同一份台账重复运行要逐字节一致，证书里不许出现生成时间"
     },
     "test_outputs.py::test_failed_run_keeps_previous_report": {
-      "weight": 0.01,
+      "weight": 0.011,
       "rationale": "失败运行不得改写上一张证书，检验写入顺序与原子替换"
     },
     "test_outputs.py::test_zero_plateau_tolerance_rejected": {
-      "weight": 0.025,
+      "weight": 0.023,
       "rationale": "fit.plateau_tolerance_c 恰好为 0 的边界拒收"
     },
     "test_outputs.py::test_verdict_accept_when_within_limits": {
-      "weight": 0.04,
-      "rationale": "首件核查判定的放行分支：两项检查都过才写 ACCEPT"
+      "weight": 0.034,
+      "rationale": "首件判定放行分支：三项检查都过才写 ACCEPT"
     },
     "test_outputs.py::test_verdict_rejects_off_nominal_slope": {
-      "weight": 0.04,
+      "weight": 0.034,
       "rationale": "斜率相对标称值超差时必须判 REJECT"
     },
     "test_outputs.py::test_verdict_rejects_bad_residual_chi2": {
-      "weight": 0.035,
+      "weight": 0.029,
       "rationale": "残差超过上限时必须判 REJECT"
+    },
+    "test_outputs.py::test_verdict_rejects_off_nominal_midpoint": {
+      "weight": 0.026,
+      "rationale": "相变中点偏离标称值超过容差时必须判 REJECT"
     }
   }
 }

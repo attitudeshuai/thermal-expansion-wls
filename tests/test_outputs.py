@@ -1,9 +1,9 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""判分输出：十九条行为测试按重要程度加权，权重和 = 1，另有一条门禁用例。
+"""判分输出：二十二条行为测试按重要程度加权，权重和 = 1，另有一条门禁用例。
 
-每条测试自己造一段升温记录，按加权最小二乘 / 广义最小二乘独立复算系数、标准误、
-相关系数与卡方，再驱动被测程序的命令行入口比对证书。期望值不读被测代码，
+每条测试自己造一段升温记录，按加权 / 广义最小二乘独立复算系数、相变台阶参数、
+标准误、相关系数与卡方，再驱动被测程序的命令行入口比对证书。期望值不读被测代码，
 也不读参考解的输出。
 """
 import json
@@ -17,6 +17,7 @@ import pytest
 
 APP = os.environ.get("CT_APP_DIR", "/app")
 ENTRY = os.path.join(APP, "src", "expansion.py")
+NPAR = 6
 
 
 class _Lcg(object):
@@ -28,17 +29,23 @@ class _Lcg(object):
         return (self.state % 1000003) / 1000003.0
 
 
-def make_data(a1=0.600, a2=0.0008, a0=0.0, t_ref=25.0, t_start=25.0, t_end=225.0,
-              step=1.0, plateau_at=120.0, plateau_len=40, sigma_lo=0.003, sigma_hi=0.003,
-              rho=0.0, common_mode=0.0, skew=1.0, seed=101):
+def _logistic(z):
+    if z >= 0.0:
+        return 1.0 / (1.0 + math.exp(-z))
+    e = math.exp(z)
+    return e / (1.0 + e)
+
+
+def make_data(a1=0.600, a2=0.0008, a0=0.0, a_step=2.2, tc=180.0, width=1.0,
+              t_ref=25.0, t_start=25.0, t_end=400.0, step=1.0, plateau_at=120.0,
+              plateau_len=40, sigma_lo=0.003, sigma_hi=0.006, rho=0.0, common_mode=0.0,
+              seed=101):
     rng = _Lcg(seed)
     temps = []
     t = t_start
-    frac = 0.0
     while t <= t_end + 1e-9:
         temps.append(round(t, 2))
-        frac = min(frac + 1.0 / 400.0, 1.0)
-        t += step * (1.0 + (skew - 1.0) * frac)
+        t += step
     plateau = [round(plateau_at, 2)] * plateau_len
     pos = min(range(len(temps)), key=lambda k: abs(temps[k] - plateau_at))
     temps = temps[:pos] + plateau + temps[pos:]
@@ -57,13 +64,14 @@ def make_data(a1=0.600, a2=0.0008, a0=0.0, t_ref=25.0, t_start=25.0, t_end=225.0
             noise = common * sigma + shared
         else:
             noise = gauss[idx] * sigma
-        y = a0 + a1 * dT + a2 * dT * dT + noise
+        y = a0 + a1 * dT + a2 * dT * dT + a_step * _logistic((temp - tc) / width) + noise
         samples.append({"t": temp, "L": round(y, 6), "sigma": round(sigma, 6)})
     return {"unit": {"temperature": "degC", "length": "um"},
             "reference_temperature": t_ref, "samples": samples,
             "inspection": {"slope_nominal_um_per_c": a1, "slope_tolerance_pct": 1.0,
-                           "max_residual_chi2": 1.5},
-            "fit": {"plateau_tolerance_c": 0.02, "min_used": 10,
+                           "max_residual_chi2": 1.5,
+                           "midpoint_nominal_c": tc, "midpoint_tolerance_c": 3.0},
+            "fit": {"plateau_tolerance_c": 0.02, "min_used": 12,
                     "error_correlation": rho, "common_mode_sigma": common_mode}}
 
 
@@ -76,29 +84,37 @@ def _keep(rows, tol):
     return kept
 
 
-def _solve3(a, b):
-    m = [row[:] + [b[i]] for i, row in enumerate(a)]
-    for col in range(3):
-        piv = max(range(col, 3), key=lambda r: abs(m[r][col]))
+def _solve(a, b):
+    n = len(a)
+    m = [a[i][:] + [b[i]] for i in range(n)]
+    for col in range(n):
+        piv = max(range(col, n), key=lambda r: abs(m[r][col]))
+        if abs(m[piv][col]) < 1e-14:
+            return None
         m[col], m[piv] = m[piv], m[col]
         pv = m[col][col]
-        for k in range(col, 4):
+        for k in range(col, n + 1):
             m[col][k] /= pv
-        for r in range(3):
-            if r != col:
-                f = m[r][col]
-                for k in range(col, 4):
+        for r in range(n):
+            if r == col:
+                continue
+            f = m[r][col]
+            if f:
+                for k in range(col, n + 1):
                     m[r][k] -= f * m[col][k]
-    return [m[0][3], m[1][3], m[2][3]]
+    return [m[i][n] for i in range(n)]
 
 
-def _inv3(a):
-    inv = [[0.0] * 3 for _ in range(3)]
-    for j in range(3):
-        col = _solve3(a, [1.0 if i == j else 0.0 for i in range(3)])
-        for i in range(3):
-            inv[i][j] = col[i]
-    return inv
+def _inv(a):
+    n = len(a)
+    out = [[0.0] * n for _ in range(n)]
+    for j in range(n):
+        col = _solve(a, [1.0 if i == j else 0.0 for i in range(n)])
+        if col is None:
+            return None
+        for i in range(n):
+            out[i][j] = col[i]
+    return out
 
 
 def _chol(mat):
@@ -125,53 +141,122 @@ def _fsub(low, vec):
     return out
 
 
-def _whiten(cols, sigmas, rho, common=0.0):
+def _whitener(sigmas, rho, common):
     n = len(sigmas)
     if rho <= 0 and common <= 0:
-        return [[c[i] / sigmas[i] for i in range(n)] for c in cols]
+        return lambda vec: [vec[i] / sigmas[i] for i in range(n)]
     cov = [[sigmas[i] * sigmas[j] * (rho ** abs(i - j)) + common * common
             for j in range(n)] for i in range(n)]
     low = _chol(cov)
     if low is None:
         return None
-    return [_fsub(low, list(c)) for c in cols]
+    return lambda vec: _fsub(low, list(vec))
+
+
+def _normals(cols, y):
+    npar = len(cols)
+    xtx = [[0.0] * npar for _ in range(npar)]
+    xty = [0.0] * npar
+    for i in range(len(y)):
+        for a in range(npar):
+            ca = cols[a][i]
+            xty[a] += ca * y[i]
+            for b in range(npar):
+                xtx[a][b] += ca * cols[b][i]
+    return xtx, xty
+
+
+def _golden(fn, lo, hi, iters=70):
+    phi = (math.sqrt(5.0) - 1.0) / 2.0
+    a, b = lo, hi
+    c = b - phi * (b - a)
+    d = a + phi * (b - a)
+    fc, fd = fn(c), fn(d)
+    for _ in range(iters):
+        if fc <= fd:
+            b, d, fd = d, c, fc
+            c = b - phi * (b - a)
+            fc = fn(c)
+        else:
+            a, c, fc = c, d, fd
+            d = a + phi * (b - a)
+            fd = fn(d)
+    return (a + b) / 2.0
 
 
 def expect(data):
+    """独立复算：自己的一套 (Tc, w) 网格与细化路径（网格与细化顺序和参考解不同）。"""
     t_ref = float(data["reference_temperature"])
+    fit_cfg = data["fit"] or {}
     rows = _keep([{"t": float(s["t"]), "y": float(s["L"]), "s": float(s["sigma"])}
-                  for s in data["samples"]], float(data["fit"]["plateau_tolerance_c"]))
-    rho = float((data.get("fit") or {}).get("error_correlation", 0.0) or 0.0)
-    common = float((data.get("fit") or {}).get("common_mode_sigma", 0.0) or 0.0)
+                  for s in data["samples"]], float(fit_cfg["plateau_tolerance_c"]))
+    rho = float(fit_cfg.get("error_correlation", 0.0) or 0.0)
+    common = float(fit_cfg.get("common_mode_sigma", 0.0) or 0.0)
     sigmas = [r["s"] for r in rows]
-    cols = [[1.0 for _ in rows],
-            [r["t"] - t_ref for r in rows],
-            [(r["t"] - t_ref) ** 2 for r in rows],
-            [r["y"] for r in rows]]
-    white = _whiten(cols, sigmas, rho, common)
-    if white is None:
+    dt = [r["t"] - t_ref for r in rows]
+    ts = [r["t"] for r in rows]
+    ys = [r["y"] for r in rows]
+    whiten = _whitener(sigmas, rho, common)
+    if whiten is None:
         raise AssertionError("相关系数导致协方差矩阵不正定")
-    w0, w1, w2, wy = white
-    xtwx = [[0.0] * 3 for _ in range(3)]
-    xtwy = [0.0] * 3
-    for i in range(len(rows)):
-        x = [w0[i], w1[i], w2[i]]
-        for a in range(3):
-            xtwy[a] += x[a] * wy[i]
-            for b in range(3):
-                xtwx[a][b] += x[a] * x[b]
-    beta = _solve3(xtwx, xtwy)
-    sse = 0.0
-    for i in range(len(rows)):
-        m = beta[0] * w0[i] + beta[1] * w1[i] + beta[2] * w2[i]
-        sse += (wy[i] - m) ** 2
-    dof = len(rows) - 3
+    wx0 = whiten([1.0] * len(rows))
+    wx1 = whiten(dt)
+    wx2 = whiten([v * v for v in dt])
+    wy = whiten(ys)
+    base = [wx0, wx1, wx2]
+
+    def sse_at(tc, width):
+        step = whiten([_logistic((v - tc) / width) for v in ts])
+        cols = base + [step]
+        xtx, xty = _normals(cols, wy)
+        coef = _solve(xtx, xty)
+        if coef is None:
+            return None
+        sse = 0.0
+        for i in range(len(wy)):
+            model = coef[0] * wx0[i] + coef[1] * wx1[i] + coef[2] * wx2[i] + coef[3] * step[i]
+            sse += (wy[i] - model) ** 2
+        return coef, sse
+
+    lo_t = min(r["t"] for r in rows)
+    hi_t = max(r["t"] for r in rows)
+    span = hi_t - lo_t
+    best = None
+    tc_grid = [lo_t + span * (i + 1) / 22.0 for i in range(21)]
+    width_grid = [0.8, 1.2, 2.0, 3.0, 4.0, 6.0, 9.0, 13.0]
+    for tc in tc_grid:
+        for width in width_grid:
+            got = sse_at(tc, width)
+            if got is None:
+                continue
+            coef, sse = got
+            if best is None or sse < best[0]:
+                best = (sse, tc, width)
+    _, tc_best, w_best = best
+
+    for _ in range(2):
+        tc_best = _golden(lambda x: sse_at(x, w_best)[1], tc_best - 8.0, tc_best + 8.0)
+        w_best = _golden(lambda x: sse_at(tc_best, x)[1], max(0.2, w_best / 2.5), w_best * 2.5)
+
+    coef, sse = sse_at(tc_best, w_best)
+    n = len(rows)
+    dof = n - NPAR
     var = sse / dof
-    cov = [[var * v for v in row] for row in _inv3(xtwx)]
-    se = [math.sqrt(max(cov[i][i], 0.0)) for i in range(3)]
+    step = whiten([_logistic((v - tc_best) / w_best) for v in ts])
+    d_tc = [-_logistic((v - tc_best) / w_best) * (1.0 - _logistic((v - tc_best) / w_best)) / w_best
+            for v in ts]
+    d_w = [-_logistic((v - tc_best) / w_best) * (1.0 - _logistic((v - tc_best) / w_best))
+           * (v - tc_best) / (w_best * w_best) for v in ts]
+    cols = base + [step, whiten([coef[3] * v for v in d_tc]), whiten([coef[3] * v for v in d_w])]
+    xtx, _ = _normals(cols, wy)
+    inv = _inv(xtx)
+    if inv is None:
+        raise AssertionError("独立复算的雅可比奇异")
+    cov = [[var * inv[i][j] for j in range(NPAR)] for i in range(NPAR)]
+    se = [math.sqrt(max(cov[i][i], 0.0)) for i in range(NPAR)]
     corr = cov[1][2] / math.sqrt(cov[1][1] * cov[2][2])
-    return {"beta": beta, "se": se, "corr": corr, "chi2": sse / dof,
-            "fitted_points": len(rows), "degrees_of_freedom": dof, "rho": rho}
+    return {"beta": coef[:4], "tc": tc_best, "width": w_best, "se": se, "corr": corr,
+            "chi2": sse / dof, "fitted_points": n, "degrees_of_freedom": dof, "rho": rho}
 
 
 def _run(path, out_path, timeout=240):
@@ -211,7 +296,7 @@ def _corrupt(data, case):
         for s in out["samples"]:
             s["t"] = 25.0
     else:
-        out["fit"]["min_used"] = 250
+        out["fit"]["min_used"] = 900
     return out
 
 
@@ -232,7 +317,7 @@ def _boost_sigma(data, temp, factor):
 def test_coefficients_match_independent_wls():
     """题面原文：「L = a0 + a1·ΔT + a2·ΔT²」。
 
-    出厂记录：三个系数都要与独立复算的加权拟合一致，相对差不超过 0.5%。
+    出厂记录：二次项的三个系数都要与独立复算的加权拟合一致，相对差不超过 0.5%。
     """
     data = make_data(seed=101)
     report, ctx = run_case(data)
@@ -250,11 +335,56 @@ def test_coefficients_match_independent_wls():
         "二次项没对上：被测 %r，独立复算 %r" % (curv, exp["beta"][2])
 
 
+def test_transition_terms_match_independent():
+    """题面原文：「A·S((T − Tc)/w)」。
+
+    相变台阶的三项：中点、宽度、台阶高度都要与独立复算一致（中点与宽度 1%，高度 2%）。
+    """
+    data = make_data(seed=113)
+    report, ctx = run_case(data)
+    assert isinstance(report, dict), "没产出证书：stderr=%r" % (ctx["proc"].stderr or "")
+    exp = expect(data)
+    terms = report["transition_terms"]
+    mid = float(terms["midpoint_c"])
+    width = float(terms["width_c"])
+    amp = float(terms["amplitude_um"])
+    assert abs(mid - exp["tc"]) <= 0.01 * abs(exp["tc"]), \
+        "相变中点没对上：被测 %r，独立复算 %r" % (mid, exp["tc"])
+    assert abs(mid - 180.0) <= 0.01 * 180.0, "相变中点离真值太远：被测 %r，真值 180" % (mid,)
+    assert abs(width - exp["width"]) <= 0.01 * abs(exp["width"]), \
+        "相变宽度没对上：被测 %r，独立复算 %r" % (width, exp["width"])
+    assert abs(amp - exp["beta"][3]) <= 0.02 * abs(exp["beta"][3]), \
+        "台阶高度没对上：被测 %r，独立复算 %r" % (amp, exp["beta"][3])
+
+
+def test_transition_uncertainties_reported():
+    """题面原文：「白化空间的 6 列雅可比」。
+
+    相变参数的三个标准误都要为正，且与独立复算相差不超过 15%；把 Tc、w 当成已知量、
+    只对线性参数求协方差的写法，这三个数会明显偏小。
+    """
+    data = make_data(seed=127, sigma_lo=0.002, sigma_hi=0.004)
+    report, ctx = run_case(data)
+    assert isinstance(report, dict), "没产出证书：stderr=%r" % (ctx["proc"].stderr or "")
+    exp = expect(data)
+    uncs = report["transition_uncertainties"]
+    se_mid = float(uncs["midpoint_c"])
+    se_width = float(uncs["width_c"])
+    se_amp = float(uncs["amplitude_um"])
+    assert se_mid > 0.0 and se_width > 0.0 and se_amp > 0.0, \
+        "相变参数的标准误不是正数：%r" % (uncs,)
+    assert abs(se_mid - exp["se"][4]) <= 0.15 * exp["se"][4], \
+        "中点标准误没对上：被测 %r，独立复算 %r" % (se_mid, exp["se"][4])
+    assert abs(se_width - exp["se"][5]) <= 0.15 * exp["se"][5], \
+        "宽度标准误没对上：被测 %r，独立复算 %r" % (se_width, exp["se"][5])
+    assert abs(se_amp - exp["se"][3]) <= 0.15 * exp["se"][3], \
+        "台阶高度标准误没对上：被测 %r，独立复算 %r" % (se_amp, exp["se"][3])
+
+
 def test_std_errors_reflect_point_weights():
     """题面原文：「各点不确定度不同，不能当等权处理」。
 
     逐点不确定度从 0.002 涨到 0.05 的记录：a1 的标准误必须与加权复算一致（5% 以内）。
-    把 sigma 当等权处理时，标准误会差出好几倍。
     """
     data = make_data(sigma_lo=0.002, sigma_hi=0.05, seed=211)
     report, ctx = run_case(data)
@@ -286,27 +416,26 @@ def test_plateau_run_kept_once_only():
 def test_second_dataset_with_other_range():
     """题面原文：「复检会换升温范围、膨胀系数与噪声水平」。
 
-    换成 40→400 °C、a1=1.6、a2=0.004 的记录后仍要吻合。
+    换成 40→260 °C、a1=1.6、相变点在 150 °C 的记录后仍要吻合。
     """
-    data = make_data(a1=1.6, a2=0.004, t_start=40.0, t_end=400.0, step=2.0,
-                     plateau_at=200.0, plateau_len=20, sigma_lo=0.004, sigma_hi=0.02,
-                     seed=409)
+    data = make_data(a1=1.6, a2=0.004, a_step=1.4, tc=150.0, width=2.0,
+                     t_start=40.0, t_end=260.0, step=1.5, plateau_at=200.0,
+                     plateau_len=20, sigma_lo=0.004, sigma_hi=0.02, seed=409)
     report, ctx = run_case(data)
     assert isinstance(report, dict), "没产出证书：stderr=%r" % (ctx["proc"].stderr or "")
     exp = expect(data)
-    terms = report["expansion_terms"]
-    slope = float(terms["slope_um_per_c"])
-    curv = float(terms["curvature_um_per_c2"])
+    slope = float(report["expansion_terms"]["slope_um_per_c"])
+    mid = float(report["transition_terms"]["midpoint_c"])
     assert abs(slope - exp["beta"][1]) <= 0.0015 * abs(exp["beta"][1]), \
         "换量程后膨胀系数没对上：被测 %r，独立复算 %r" % (slope, exp["beta"][1])
-    assert abs(curv - exp["beta"][2]) <= 0.0015 * abs(exp["beta"][2]), \
-        "换量程后二次项没对上：被测 %r，独立复算 %r" % (curv, exp["beta"][2])
+    assert abs(mid - exp["tc"]) <= 0.01 * abs(exp["tc"]), \
+        "换量程后相变中点没对上：被测 %r，独立复算 %r" % (mid, exp["tc"])
     assert int(report["degrees_of_freedom"]) == exp["degrees_of_freedom"], \
         "自由度不对：被测 %r，应为 %r" % (report["degrees_of_freedom"], exp["degrees_of_freedom"])
 
 
 def test_chi2_reduced_near_unity():
-    """题面原文：「chi2_red = 白化后残差平方和 /(n - 3)」。
+    """题面原文：「chi2_red = 白化后残差平方和 /(n - 6)」。
 
     噪声按 sigma 生成，chi2_red 应在 1 附近（0.4 到 2.0），且与独立复算相差不超过 5%。
     """
@@ -338,7 +467,6 @@ def test_correlated_errors_use_gls():
     """题面原文：「这时按广义最小二乘算」。
 
     ρ=0.6 的数据上，报告斜率必须与独立 GLS 相差不超过 1%，并且报告里回填了 error_correlation。
-    把相关误差当成独立误差（普通加权最小二乘）会明显偏。
     """
     data = make_data(sigma_lo=0.004, sigma_hi=0.010, rho=0.6, seed=211)
     report, ctx = run_case(data)
@@ -375,8 +503,7 @@ def test_correlated_errors_std_error_matches_gls():
 def test_common_mode_error_handled():
     """题面原文：「所有点一起漂移的共模误差标准差」。
 
-    叠上 τ=0.0025 的共模误差：斜率要落在独立复算的 0.3% 以内，标准误在 5% 以内，
-    且报告回填了 common_mode_sigma。漏掉共模项的实现，斜率与标准误都会被低估。
+    叠上 τ=0.0025 的共模误差：斜率要落在独立复算的 0.3% 以内，标准误在 5% 以内。
     """
     data = make_data(sigma_lo=0.002, sigma_hi=0.004, common_mode=0.0025, seed=421)
     report, ctx = run_case(data)
@@ -397,7 +524,8 @@ def test_exactly_min_used_points_accepted():
 
     构造恰好剩 min_used 个有效点的台账：程序要出证书，不能因为「等于」被判成「少于」。
     """
-    data = make_data(t_start=25.0, t_end=45.0, step=1.0, plateau_at=35.0, plateau_len=6, seed=701)
+    data = make_data(t_start=25.0, t_end=70.0, step=3.5, plateau_at=40.0,
+                     plateau_len=3, seed=701)
     first, ctx1 = run_case(data)
     assert isinstance(first, dict), "基线台账没出证书：stderr=%r" % (ctx1["proc"].stderr or "")
     usable = int(first["fitted_points"])
@@ -414,7 +542,8 @@ def test_one_minus_min_used_rejected():
 
     同一份台账把 min_used 抬到比可用点还多一个：必须退出码 2 且不产出证书。
     """
-    data = make_data(t_start=25.0, t_end=45.0, step=1.0, plateau_at=35.0, plateau_len=6, seed=703)
+    data = make_data(t_start=25.0, t_end=70.0, step=3.5, plateau_at=40.0,
+                     plateau_len=3, seed=703)
     report, ctx = run_case(data)
     assert isinstance(report, dict), "基线台账没出证书：stderr=%r" % (ctx["proc"].stderr or "")
     usable = int(report["fitted_points"])
@@ -466,22 +595,29 @@ def test_report_schema_and_rounding():
     report, ctx = run_case(data)
     assert isinstance(report, dict), "没产出证书：stderr=%r" % (ctx["proc"].stderr or "")
     need = {"recorded_points", "fitted_points", "degrees_of_freedom", "reference_temperature",
-            "expansion_terms", "term_uncertainties", "slope_intercept_correlation",
-            "residual_chi2", "error_correlation", "common_mode_sigma", "verdict", "checks",
-            "certificate_note"}
+            "expansion_terms", "transition_terms", "term_uncertainties",
+            "transition_uncertainties", "slope_intercept_correlation", "residual_chi2",
+            "error_correlation", "common_mode_sigma", "verdict", "checks", "certificate_note"}
     missing = sorted(need - set(report))
     assert not missing, "证书缺字段：%r" % (missing,)
     terms = report["expansion_terms"]
     uncs = report["term_uncertainties"]
     six = [float(terms["intercept_um"]), float(terms["slope_um_per_c"]),
            float(terms["curvature_um_per_c2"]), float(uncs["intercept_um"]),
-           float(uncs["slope_um_per_c"]), float(uncs["curvature_um_per_c2"])]
+           float(uncs["slope_um_per_c"]), float(uncs["curvature_um_per_c2"]),
+           float(report["transition_terms"]["amplitude_um"]),
+           float(report["transition_uncertainties"]["amplitude_um"])]
     assert all(math.isfinite(v) for v in six), "系数或标准误里有非有限值：%r" % (six,)
     assert all(abs(v - round(v, 6)) <= 1e-12 for v in six), "系数或标准误没保留六位小数：%r" % (six,)
-    three = [float(report["slope_intercept_correlation"]), float(report["residual_chi2"])]
-    assert all(abs(v - round(v, 3)) <= 1e-12 for v in three), "相关系数或卡方没保留三位：%r" % (three,)
-    assert int(report["degrees_of_freedom"]) == int(report["fitted_points"]) - 3, \
-        "自由度不等于拟合点数减三：%r" % (report["degrees_of_freedom"],)
+    three = [float(report["transition_terms"]["midpoint_c"]),
+             float(report["transition_terms"]["width_c"]),
+             float(report["transition_uncertainties"]["midpoint_c"]),
+             float(report["transition_uncertainties"]["width_c"])]
+    assert all(abs(v - round(v, 3)) <= 1e-12 for v in three), "相变参数没保留三位小数：%r" % (three,)
+    pair = [float(report["slope_intercept_correlation"]), float(report["residual_chi2"])]
+    assert all(abs(v - round(v, 3)) <= 1e-12 for v in pair), "相关系数或卡方没保留三位：%r" % (pair,)
+    assert int(report["degrees_of_freedom"]) == int(report["fitted_points"]) - 6, \
+        "自由度不等于拟合点数减六：%r" % (report["degrees_of_freedom"],)
     assert set(report["certificate_note"]) >= {"method", "unit"}, \
         "certificate_note 缺 method 或 unit：%r" % (report["certificate_note"],)
     raw = open(ctx["out"], encoding="utf-8").read()
@@ -544,16 +680,17 @@ def test_zero_plateau_tolerance_rejected():
 
 
 def test_verdict_accept_when_within_limits():
-    """题面原文：「两项都通过写 ACCEPT」。
+    """题面原文：「三项都通过写 ACCEPT」。
 
-    数据与标称值一致、残差在限内：verdict 必须是 ACCEPT，且两项 check 都通过。
+    数据与标称值一致、残差在限内、相变中点也对：verdict 必须是 ACCEPT，三项 check 都通过。
     """
-    data = make_data(sigma_lo=0.002, sigma_hi=0.004, seed=1009)
+    data = make_data(seed=1009, sigma_lo=0.002, sigma_hi=0.004)
     report, ctx = run_case(data)
     assert isinstance(report, dict), "没产出证书：stderr=%r" % (ctx["proc"].stderr or "")
     assert report["verdict"] == "ACCEPT", "本该判合格，实际 %r" % (report["verdict"],)
     checks = _checks(report)
-    assert set(checks) == {"slope_vs_nominal", "residual_chi2"}, "checks 项不对：%r" % (sorted(checks),)
+    assert set(checks) == {"slope_vs_nominal", "residual_chi2", "midpoint_vs_nominal"}, \
+        "checks 项不对：%r" % (sorted(checks),)
     assert all(item["passed"] for item in checks.values()), "ACCEPT 却有未通过的检查项"
     assert abs(float(checks["slope_vs_nominal"]["value"])) <= 1.0, \
         "合格件的斜率偏离超过容差：%r" % (checks["slope_vs_nominal"],)
@@ -564,7 +701,7 @@ def test_verdict_rejects_off_nominal_slope():
 
     把标称斜率改成偏离 3% 的值（容差 1%）：必须判 REJECT，且 slope_vs_nominal 未通过。
     """
-    data = make_data(sigma_lo=0.002, sigma_hi=0.004, seed=1013)
+    data = make_data(seed=1013, sigma_lo=0.002, sigma_hi=0.004)
     nominal = data["inspection"]["slope_nominal_um_per_c"]
     data["inspection"]["slope_nominal_um_per_c"] = round(nominal * 1.03, 6)
     report, ctx = run_case(data)
@@ -579,14 +716,30 @@ def test_verdict_rejects_off_nominal_slope():
 def test_verdict_rejects_bad_residual_chi2():
     """题面原文：「有一项不通过写 REJECT」。
 
-    把残差上限压到 0.5（实际约 1.0）：必须判 REJECT，且 residual_chi2 未通过。
+    把残差上限压到 0.2（实际约 1.0）：必须判 REJECT，且 residual_chi2 未通过。
     """
-    data = make_data(sigma_lo=0.002, sigma_hi=0.004, seed=1019)
-    data["inspection"]["max_residual_chi2"] = 0.5
+    data = make_data(seed=1019, sigma_lo=0.002, sigma_hi=0.004)
+    data["inspection"]["max_residual_chi2"] = 0.2
     report, ctx = run_case(data)
     assert isinstance(report, dict), "没产出证书：stderr=%r" % (ctx["proc"].stderr or "")
     assert report["verdict"] == "REJECT", "残差超限却判合格：%r" % (report["verdict"],)
     checks = _checks(report)
     assert checks["residual_chi2"]["passed"] is False, "残差超限却没标未通过"
-    assert float(checks["residual_chi2"]["value"]) > 0.5, \
+    assert float(checks["residual_chi2"]["value"]) > 0.2, \
         "残差没超过压下来的上限：%r" % (checks["residual_chi2"],)
+
+
+def test_verdict_rejects_off_nominal_midpoint():
+    """题面原文：「的偏差（°C）超过」。
+
+    把标称相变中点挪到偏离 8 °C 的位置（容差 3 °C）：必须判 REJECT，且 midpoint_vs_nominal 未通过。
+    """
+    data = make_data(seed=1021, sigma_lo=0.002, sigma_hi=0.004)
+    data["inspection"]["midpoint_nominal_c"] = 188.0
+    report, ctx = run_case(data)
+    assert isinstance(report, dict), "没产出证书：stderr=%r" % (ctx["proc"].stderr or "")
+    assert report["verdict"] == "REJECT", "相变中点超差却判合格：%r" % (report["verdict"],)
+    checks = _checks(report)
+    assert checks["midpoint_vs_nominal"]["passed"] is False, "中点超差却没标未通过"
+    assert float(checks["midpoint_vs_nominal"]["value"]) > 3.0, \
+        "中点偏差没超过容差：%r" % (checks["midpoint_vs_nominal"],)
