@@ -68,6 +68,19 @@ def load_data(path):
     if not isinstance(min_used, int) or isinstance(min_used, bool) or min_used < 6:
         _fail("fit.min_used 要是不小于 6 的整数")
 
+    insp = raw.get("inspection")
+    if not isinstance(insp, dict):
+        _fail("缺 inspection 判定规则段")
+    slope_nominal = insp.get("slope_nominal_um_per_c")
+    slope_tol = insp.get("slope_tolerance_pct", 1.0)
+    chi2_limit = insp.get("max_residual_chi2", 1.5)
+    for name, val in (("slope_nominal_um_per_c", slope_nominal),
+                      ("slope_tolerance_pct", slope_tol),
+                      ("max_residual_chi2", chi2_limit)):
+        if not isinstance(val, (int, float)) or isinstance(val, bool) or not math.isfinite(float(val)):
+            _fail("inspection.%s 要是有限数值" % name)
+    if float(slope_tol) <= 0 or float(chi2_limit) <= 0:
+        _fail("inspection 的容差与残差上限都要为正")
     rows = []
     for i, s in enumerate(samples):
         if not isinstance(s, dict):
@@ -84,7 +97,9 @@ def load_data(path):
             _fail("samples[%d].sigma 必须为正" % i)
         rows.append({"t": t, "y": y, "sigma": sig})
     return {"rows": rows, "t_ref": float(t_ref), "tol": float(tol),
-            "min_used": int(min_used), "unit": (raw.get("unit") or {}), "rho": rho, "common": common}
+            "min_used": int(min_used), "unit": (raw.get("unit") or {}), "rho": rho, "common": common,
+            "slope_nominal": float(slope_nominal), "slope_tol": float(slope_tol),
+            "chi2_limit": float(chi2_limit)}
 
 
 def keep_plateau_free(rows, tol):
@@ -220,7 +235,28 @@ def analyse(scan):
             "recorded_points": len(scan["rows"]), "fitted_points": len(rows), "degrees_of_freedom": dof}
 
 
+
+def evaluate(scan, res):
+    """按 inspection 里的规则逐项判定，返回 (verdict, checks)。"""
+    slope_nominal = float(scan["slope_nominal"])
+    slope_tol = float(scan["slope_tol"])
+    chi2_limit = float(scan["chi2_limit"])
+    slope = res["beta"][1]
+    dev_pct = abs(slope - slope_nominal) / slope_nominal * 100.0
+    chi2 = res["chi2"]
+    checks = [
+        {"name": "slope_vs_nominal", "value": round(dev_pct, 4),
+         "limit": round(slope_tol, 4), "passed": dev_pct <= slope_tol},
+        {"name": "residual_chi2", "value": round(chi2, 4),
+         "limit": round(chi2_limit, 4), "passed": chi2 <= chi2_limit},
+    ]
+    verdict = "ACCEPT" if all(item["passed"] for item in checks) else "REJECT"
+    return verdict, checks
+
+
+
 def build_report(scan, res):
+    verdict, checks = evaluate(scan, res)
     return {
         "recorded_points": res["recorded_points"],
         "fitted_points": res["fitted_points"],
@@ -236,8 +272,10 @@ def build_report(scan, res):
         "residual_chi2": round(res["chi2"], 3),
         "error_correlation": round(scan["rho"], 3),
         "common_mode_sigma": round(scan["common"], 6),
-        "certificate_note": {"method": "gls-quadratic" if scan["rho"] > 0 else "wls-quadratic",
-                 "unit": scan["unit"]},
+        "verdict": verdict,
+        "checks": checks,
+        "certificate_note": {"method": "gls-quadratic" if (scan["rho"] > 0 or scan["common"] > 0) else "wls-quadratic",
+                            "unit": scan["unit"]},
     }
 
 

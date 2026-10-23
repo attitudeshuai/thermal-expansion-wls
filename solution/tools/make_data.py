@@ -48,7 +48,10 @@ def make_data(a1=0.600, a2=0.0008, a0=0.0, t_ref=25.0, t_start=25.0, t_end=225.0
         "unit": {"temperature": "degC", "length": "um"},
         "reference_temperature": t_ref,
         "samples": samples,
-        "fit": {"plateau_tolerance_c": 0.02, "min_used": 10},
+        "inspection": {"slope_nominal_um_per_c": 0.600, "slope_tolerance_pct": 1.0,
+                       "max_residual_chi2": 1.5},
+        "fit": {"plateau_tolerance_c": 0.02, "min_used": 10,
+                "error_correlation": 0.0, "common_mode_sigma": 0.0},
     }
 
 
