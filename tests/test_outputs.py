@@ -15,24 +15,6 @@ import tempfile
 APP = os.environ.get("CT_APP_DIR", "/app")
 ENTRY = os.path.join(APP, "src", "expansion.py")
 
-WEIGHTS = {
-    "test_coefficients_match_independent_wls": 0.09,
-    "test_std_errors_reflect_point_weights": 0.07,
-    "test_plateau_run_kept_once_only": 0.06,
-    "test_second_dataset_with_other_range": 0.05,
-    "test_chi2_reduced_near_unity": 0.04,
-    "test_corr_a1_a2_matches_independent": 0.04,
-    "test_correlated_errors_use_gls": 0.09,
-    "test_correlated_errors_std_error_matches_gls": 0.10,
-    "test_common_mode_error_handled": 0.10,
-    "test_exactly_min_used_points_accepted": 0.09,
-    "test_one_minus_min_used_rejected": 0.09,
-    "test_huge_sigma_point_barely_moves_fit": 0.08,
-    "test_invalid_data_rejected_without_output": 0.05,
-    "test_report_schema_and_rounding": 0.02,
-    "test_rerun_produces_identical_bytes": 0.02,
-    "test_failed_run_keeps_previous_report": 0.01,
-}
 
 
 class _Lcg(object):
@@ -233,7 +215,6 @@ def _complete(report):
                     return False
             except (KeyError, TypeError, ValueError):
                 return False
-    return True
 
 
 def test_coefficients_match_independent_wls():
@@ -354,7 +335,6 @@ def test_correlated_errors_use_gls():
         "chi2_red 没在白化后的残差上算：被测 %r，独立复算 %r" % (chi2, exp["chi2"])
     assert abs(float(report["error_correlation"]) - 0.6) <= 1e-9, \
         "报告没回填 error_correlation：%r" % report.get("error_correlation")
-    return True
 
 
 def test_correlated_errors_std_error_matches_gls():
@@ -372,7 +352,6 @@ def test_correlated_errors_std_error_matches_gls():
     assert se1 > 1.3 * wls["se"][1], \
         "相关误差下标准误没放大（当成独立误差了）：被测 %r，独立误差基线 %r" % (se1, wls["se"][1])
     assert float(report["residual_chi2"]) <= 2.0, "chi2_red 过大：%r" % report["residual_chi2"]
-    return True
 
 
 def test_common_mode_error_handled():
@@ -391,7 +370,6 @@ def test_common_mode_error_handled():
     assert abs(se - exp["se"][1]) <= 0.05 * abs(exp["se"][1]), \
         "共模工况下标准误没对上：被测 %r，独立复算 %r" % (se, exp["se"][1])
     assert float(report["common_mode_sigma"]) == 0.0025, "报告没回填 common_mode_sigma"
-    return True
 
 
 def test_exactly_min_used_points_accepted():
@@ -407,7 +385,6 @@ def test_exactly_min_used_points_accepted():
     report, _ = run_case(data)
     assert isinstance(report, dict), "恰好 min_used=%d 个点时却拒收了" % usable
     assert int(report["fitted_points"]) == usable, "拟合点数变了：%r" % report.get("fitted_points")
-    return True
 
 
 def test_one_minus_min_used_rejected():
@@ -423,7 +400,6 @@ def test_one_minus_min_used_rejected():
     report2, ctx2 = run_case(data)
     assert report2 is None, "可用点不足 min_used 时仍产出了证书"
     assert ctx2["proc"].returncode == 2, "退出码应为 2，实际 %r" % ctx2["proc"].returncode
-    return True
 
 
 def test_huge_sigma_point_barely_moves_fit():
@@ -443,7 +419,6 @@ def test_huge_sigma_point_barely_moves_fit():
     a = float(rep_keep["expansion_terms"]["slope_um_per_c"])
     b = float(rep_boom["expansion_terms"]["slope_um_per_c"])
     assert abs(a - b) <= 0.0005 * abs(a), "大不确定度的点权重没压下去：%r 对 %r" % (b, a)
-    return True
 
 
 def test_invalid_data_rejected_without_output():
@@ -472,7 +447,6 @@ def test_invalid_data_rejected_without_output():
             return False
         if [n for n in os.listdir(tmp) if n.endswith(".tmp")]:
             return False
-    return True
 
 
 def test_report_schema_and_rounding():
@@ -544,21 +518,3 @@ def test_failed_run_keeps_previous_report():
     if second.returncode != 2:
         return False
     return open(opath, "rb").read() == before
-
-
-def main():
-    total = 0.0
-    for name, weight in WEIGHTS.items():
-        fn = globals().get(name)
-        try:
-            passed = bool(fn and fn())
-        except Exception as e:  # noqa: BLE001 —— 任何异常都按不通过计
-            print("%s: 异常 %r" % (name, e), file=sys.stderr)
-            passed = False
-        total += weight * passed
-        print("%s: %s (权重 %.2f)" % (name, "PASS" if passed else "FAIL", weight), file=sys.stderr)
-    print("%.6f" % total)
-
-
-if __name__ == "__main__":
-    main()
