@@ -16,18 +16,22 @@ APP = os.environ.get("CT_APP_DIR", "/app")
 ENTRY = os.path.join(APP, "src", "expansion.py")
 
 WEIGHTS = {
-    "test_coefficients_match_independent_wls": 0.10,
-    "test_std_errors_reflect_point_weights": 0.09,
-    "test_plateau_run_kept_once_only": 0.08,
-    "test_second_dataset_with_other_range": 0.07,
-    "test_chi2_reduced_near_unity": 0.05,
-    "test_corr_a1_a2_matches_independent": 0.06,
-    "test_correlated_errors_use_gls": 0.12,
-    "test_correlated_errors_std_error_matches_gls": 0.16,
-    "test_invalid_data_rejected_without_output": 0.08,
-    "test_report_schema_and_rounding": 0.07,
-    "test_rerun_produces_identical_bytes": 0.06,
-    "test_failed_run_keeps_previous_report": 0.06,
+    "test_coefficients_match_independent_wls": 0.09,
+    "test_std_errors_reflect_point_weights": 0.07,
+    "test_plateau_run_kept_once_only": 0.06,
+    "test_second_dataset_with_other_range": 0.05,
+    "test_chi2_reduced_near_unity": 0.04,
+    "test_corr_a1_a2_matches_independent": 0.04,
+    "test_correlated_errors_use_gls": 0.09,
+    "test_correlated_errors_std_error_matches_gls": 0.10,
+    "test_common_mode_error_handled": 0.10,
+    "test_exactly_min_used_points_accepted": 0.09,
+    "test_one_minus_min_used_rejected": 0.09,
+    "test_huge_sigma_point_barely_moves_fit": 0.08,
+    "test_invalid_data_rejected_without_output": 0.05,
+    "test_report_schema_and_rounding": 0.03,
+    "test_rerun_produces_identical_bytes": 0.02,
+    "test_failed_run_keeps_previous_report": 0.00,
 }
 
 
@@ -42,19 +46,22 @@ class _Lcg(object):
 
 def make_data(a1=0.600, a2=0.0008, a0=0.0, t_ref=25.0, t_start=25.0, t_end=225.0,
               step=1.0, plateau_at=120.0, plateau_len=40, sigma_lo=0.003, sigma_hi=0.003,
-              rho=0.0, seed=101):
+              rho=0.0, common_mode=0.0, skew=1.0, seed=101):
     rng = _Lcg(seed)
     temps = []
     t = t_start
+    frac = 0.0
     while t <= t_end + 1e-9:
         temps.append(round(t, 2))
-        t += step
+        frac = min(frac + 1.0 / 400.0, 1.0)
+        t += step * (1.0 + (skew - 1.0) * frac)
     plateau = [round(plateau_at, 2)] * plateau_len
     pos = min(range(len(temps)), key=lambda k: abs(temps[k] - plateau_at))
     temps = temps[:pos] + plateau + temps[pos:]
     span = max(temps) - min(temps)
     # 相关噪声：e_i = sqrt(1-ρ²)·ρ^i·g_0 + 白噪声（相邻误差按 ρ 衰减）
     gauss = [(rng.next_u() + rng.next_u() - 1.0) * math.sqrt(6.0) for _ in temps]
+    shared = ((rng.next_u() + rng.next_u() - 1.0) * math.sqrt(6.0)) * common_mode
     samples = []
     common = 0.0
     for idx, temp in enumerate(temps):
@@ -63,14 +70,15 @@ def make_data(a1=0.600, a2=0.0008, a0=0.0, t_ref=25.0, t_start=25.0, t_end=225.0
         dT = temp - t_ref
         if rho > 0:
             common = rho * common + math.sqrt(max(1.0 - rho * rho, 0.0)) * gauss[idx]
-            noise = common * sigma
+            noise = common * sigma + shared
         else:
             noise = gauss[idx] * sigma
         y = a0 + a1 * dT + a2 * dT * dT + noise
         samples.append({"t": temp, "L": round(y, 6), "sigma": round(sigma, 6)})
     return {"unit": {"temperature": "degC", "length": "um"},
             "reference_temperature": t_ref, "samples": samples,
-            "fit": {"plateau_tolerance_c": 0.02, "min_used": 10, "error_correlation": rho}}
+            "fit": {"plateau_tolerance_c": 0.02, "min_used": 10,
+                    "error_correlation": rho, "common_mode_sigma": common_mode}}
 
 
 def _keep(rows, tol):
@@ -132,27 +140,29 @@ def _fsub(low, vec):
     return out
 
 
-def _whiten(cols, sigmas, rho):
+def _whiten(cols, sigmas, rho, common=0.0):
     n = len(sigmas)
-    if rho <= 0:
+    if rho <= 0 and common <= 0:
         return [[c[i] / sigmas[i] for i in range(n)] for c in cols]
-    corr = [[rho ** abs(i - j) for j in range(n)] for i in range(n)]
-    low = _chol(corr)
+    cov = [[sigmas[i] * sigmas[j] * (rho ** abs(i - j)) + common * common
+            for j in range(n)] for i in range(n)]
+    low = _chol(cov)
     if low is None:
         return None
-    return [_fsub(low, [c[i] / sigmas[i] for i in range(n)]) for c in cols]
+    return [_fsub(low, list(c)) for c in cols]
 
 def expect(data):
     t_ref = float(data["reference_temperature"])
     rows = _keep([{"t": float(s["t"]), "y": float(s["L"]), "s": float(s["sigma"])}
                   for s in data["samples"]], float(data["fit"]["plateau_tolerance_c"]))
     rho = float((data.get("fit") or {}).get("error_correlation", 0.0) or 0.0)
+    common = float((data.get("fit") or {}).get("common_mode_sigma", 0.0) or 0.0)
     sigmas = [r["s"] for r in rows]
     cols = [[1.0 for _ in rows],
             [r["t"] - t_ref for r in rows],
             [(r["t"] - t_ref) ** 2 for r in rows],
             [r["y"] for r in rows]]
-    white = _whiten(cols, sigmas, rho)
+    white = _whiten(cols, sigmas, rho, common)
     if white is None:
         raise AssertionError("相关系数导致协方差矩阵不正定")
     w0, w1, w2, wy = white
@@ -362,6 +372,77 @@ def test_correlated_errors_std_error_matches_gls():
     assert se1 > 1.3 * wls["se"][1], \
         "相关误差下标准误没放大（当成独立误差了）：被测 %r，独立误差基线 %r" % (se1, wls["se"][1])
     assert float(report["residual_chi2"]) <= 2.0, "chi2_red 过大：%r" % report["residual_chi2"]
+    return True
+
+
+def test_common_mode_error_handled():
+    """题面原文：「协方差矩阵是 Σ = D·R·D + τ²·J」。
+
+    叠上 τ=0.0025 的共模误差：斜率要落在独立复算的 0.3% 以内，且报告回填了 common_mode_sigma。
+    只按相关项白化、漏掉共模项的实现，标准误会被低估。
+    """
+    data = make_data(sigma_lo=0.002, sigma_hi=0.004, common_mode=0.0025, seed=421)
+    report, _ = run_case(data)
+    exp = expect(data)
+    slope = float(report["expansion_terms"]["slope_um_per_c"])
+    se = float(report["term_uncertainties"]["slope_um_per_c"])
+    assert abs(slope - exp["beta"][1]) <= 0.003 * abs(exp["beta"][1]), \
+        "共模工况下滑率没对上：被测 %r，独立复算 %r" % (slope, exp["beta"][1])
+    assert abs(se - exp["se"][1]) <= 0.05 * abs(exp["se"][1]), \
+        "共模工况下标准误没对上：被测 %r，独立复算 %r" % (se, exp["se"][1])
+    assert float(report["common_mode_sigma"]) == 0.0025, "报告没回填 common_mode_sigma"
+    return True
+
+
+def test_exactly_min_used_points_accepted():
+    """题面原文：「剔除后有效点少于 min_used 才拒收，等于 min_used 必须照算」。
+
+    构造恰好剩 min_used 个有效点的台账：程序要出报告，不能因为「等于」被判成「少于」。
+    """
+    data = make_data(t_start=25.0, t_end=45.0, step=1.0, plateau_at=35.0, plateau_len=6, seed=701)
+    first, _ = run_case(data)
+    assert isinstance(first, dict), "基线台账没出报告"
+    usable = int(first["fitted_points"])
+    data["fit"]["min_used"] = usable
+    report, _ = run_case(data)
+    assert isinstance(report, dict), "恰好 min_used=%d 个点时却拒收了" % usable
+    assert int(report["fitted_points"]) == usable, "拟合点数变了：%r" % report.get("fitted_points")
+    return True
+
+
+def test_one_minus_min_used_rejected():
+    """题面原文：「剔除后有效点少于 min_used 必须拒收」。
+
+    同一份台账把 min_used 抬到比可用点还多一个：必须退出码 2 且不产出证书。
+    """
+    data = make_data(t_start=25.0, t_end=45.0, step=1.0, plateau_at=35.0, plateau_len=6, seed=703)
+    report, ctx = run_case(data)
+    assert isinstance(report, dict), "基线台账没出报告"
+    usable = int(report["fitted_points"])
+    data["fit"]["min_used"] = usable + 1
+    report2, ctx2 = run_case(data)
+    assert report2 is None, "可用点不足 min_used 时仍产出了证书"
+    assert ctx2["proc"].returncode == 2, "退出码应为 2，实际 %r" % ctx2["proc"].returncode
+    return True
+
+
+def test_huge_sigma_point_barely_moves_fit():
+    """题面原文：「每个温度点的重复测量标准差也一并记录，越往高温噪声越大」。
+
+    把一个点的不确定度放大 60 倍：加权后它几乎不起作用，斜率应与去掉该点相差不超过 0.05%。
+    """
+    data = make_data(sigma_lo=0.002, sigma_hi=0.004, seed=709)
+    keep = make_data(sigma_lo=0.002, sigma_hi=0.004, seed=709)
+    keep["samples"] = [s for s in keep["samples"] if s["t"] != 120.0]
+    boom = make_data(sigma_lo=0.002, sigma_hi=0.004, seed=709)
+    for s in boom["samples"]:
+        if s["t"] == 120.0:
+            s["sigma"] = round(s["sigma"] * 60.0, 6)
+    rep_keep, _ = run_case(keep)
+    rep_boom, _ = run_case(boom)
+    a = float(rep_keep["expansion_terms"]["slope_um_per_c"])
+    b = float(rep_boom["expansion_terms"]["slope_um_per_c"])
+    assert abs(a - b) <= 0.0005 * abs(a), "大不确定度的点权重没压下去：%r 对 %r" % (b, a)
     return True
 
 

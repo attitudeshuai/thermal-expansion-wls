@@ -8,6 +8,8 @@
 口径：
   · 模型 L = a0 + a1·ΔT + a2·ΔT²，ΔT = T - reference_temperature；
   · 逐点不确定度 sigma 来自仪器，权重取 1/sigma²（异方差时不能当等权处理）；
+· 协方差矩阵是 Σ = D·R·D + τ²·J：D 为逐点标准差、R_ij = ρ^|i-j|、τ 是共模项
+  （fit.common_mode_sigma，所有温度点一起上下漂的那部分），必须整体 Cholesky 白化；
 · 记录里 fit.error_correlation 给出相邻误差的相关系数 ρ（按 ρ^|i-j| 衰减），
   非零时是广义最小二乘：协方差 Σ = D·R·D，要先 Cholesky 白化再解正规方程；
   · 恒温保持段：温度与上一点相差小于 plateau_tolerance_c 的采样视为保持点，
@@ -55,6 +57,10 @@ def load_data(path):
     if not isinstance(rho, (int, float)) or isinstance(rho, bool) or not (0.0 <= float(rho) < 0.95):
         _fail("fit.error_correlation 要落在 [0, 0.95)")
     rho = float(rho)
+    common = cfg.get("common_mode_sigma", 0.0)
+    if not isinstance(common, (int, float)) or isinstance(common, bool) or float(common) < 0:
+        _fail("fit.common_mode_sigma 要是不小于 0 的数")
+    common = float(common)
     tol = cfg.get("plateau_tolerance_c", 0.02)
     min_used = cfg.get("min_used", 10)
     if not isinstance(tol, (int, float)) or isinstance(tol, bool) or float(tol) <= 0:
@@ -78,7 +84,7 @@ def load_data(path):
             _fail("samples[%d].sigma 必须为正" % i)
         rows.append({"t": t, "y": y, "sigma": sig})
     return {"rows": rows, "t_ref": float(t_ref), "tol": float(tol),
-            "min_used": int(min_used), "unit": (raw.get("unit") or {}), "rho": rho}
+            "min_used": int(min_used), "unit": (raw.get("unit") or {}), "rho": rho, "common": common}
 
 
 def keep_plateau_free(rows, tol):
@@ -118,20 +124,26 @@ def _forward_sub(low, vec):
     return out
 
 
-def _whiten(columns, sigmas, rho):
-    """把带相关误差的数据白化：先除 sigma，再乘 R 的 Cholesky 逆。"""
+def _whiten(columns, sigmas, rho, common=0.0):
+    """按 Σ = D·R·D + τ²·J 白化：直接对协方差矩阵做 Cholesky，再前代消元。
+
+    D 是逐点标准差的斜对角，R 是 ρ^|i-j| 的相关阵，最后一项是共模误差（所有点一起上下漂）。
+    """
     n = len(sigmas)
-    if rho <= 0.0:
+    if rho <= 0.0 and common <= 0.0:
         return [[c[i] / sigmas[i] for i in range(n)] for c in columns]
-    corr = [[rho ** abs(i - j) for j in range(n)] for i in range(n)]
-    low = _cholesky(corr)
+    cov = [[0.0] * n for _ in range(n)]
+    for i in range(n):
+        for j in range(n):
+            cov[i][j] = sigmas[i] * sigmas[j] * (rho ** abs(i - j)) + common * common
+    low = _cholesky(cov)
     if low is None:
         return None
     out = []
     for col in columns:
-        scaled = [col[i] / sigmas[i] for i in range(n)]
-        out.append(_forward_sub(low, scaled))
+        out.append(_forward_sub(low, list(col)))
     return out
+
 
 def solve3(a, b):
     m = [row[:] + [b[i]] for i, row in enumerate(a)]
@@ -177,7 +189,7 @@ def analyse(scan):
               [r["t"] - scan["t_ref"] for r in rows],
               [(r["t"] - scan["t_ref"]) ** 2 for r in rows]]
     cols_y = [[r["y"] for r in rows]]
-    white = _whiten(cols_x + cols_y, sigmas, rho)
+    white = _whiten(cols_x + cols_y, sigmas, rho, scan["common"])
     if white is None:
         _fail("相关系数对应的协方差矩阵不正定，检查 fit.error_correlation")
     wx0, wx1, wx2, wy = white
@@ -223,6 +235,7 @@ def build_report(scan, res):
         "slope_intercept_correlation": round(res["corr"], 3),
         "residual_chi2": round(res["chi2"], 3),
         "error_correlation": round(scan["rho"], 3),
+        "common_mode_sigma": round(scan["common"], 6),
         "certificate_note": {"method": "gls-quadratic" if scan["rho"] > 0 else "wls-quadratic",
                  "unit": scan["unit"]},
     }
