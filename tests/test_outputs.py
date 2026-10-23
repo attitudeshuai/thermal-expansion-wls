@@ -239,9 +239,9 @@ def test_coefficients_match_independent_wls():
         return False
     exp = expect(data)
     coef = report.get("expansion_terms") or {}
-    return (_close(coef.get("intercept_um"), exp["beta"][0], 0.005, 1e-5)
-            and _close(coef.get("slope_um_per_c"), exp["beta"][1], 0.005)
-            and _close(coef.get("curvature_um_per_c2"), exp["beta"][2], 0.005))
+    return (_close(coef.get("intercept_um"), exp["beta"][0], 0.0015, 5e-6)
+            and _close(coef.get("slope_um_per_c"), exp["beta"][1], 0.0015)
+            and _close(coef.get("curvature_um_per_c2"), exp["beta"][2], 0.0015))
 
 
 def test_std_errors_reflect_point_weights():
@@ -271,7 +271,7 @@ def test_plateau_run_kept_once_only():
     exp = expect(data)
     return (report.get("fitted_points") == exp["fitted_points"]
             and report.get("recorded_points") == len(data["samples"])
-            and _close((report.get("expansion_terms") or {}).get("slope_um_per_c"), exp["beta"][1], 0.005))
+            and _close((report.get("expansion_terms") or {}).get("slope_um_per_c"), exp["beta"][1], 0.0015))
 
 
 def test_second_dataset_with_other_range():
@@ -289,8 +289,8 @@ def test_second_dataset_with_other_range():
         return False
     exp = expect(data)
     coef = report.get("expansion_terms") or {}
-    return (_close(coef.get("slope_um_per_c"), exp["beta"][1], 0.005)
-            and _close(coef.get("curvature_um_per_c2"), exp["beta"][2], 0.005))
+    return (_close(coef.get("slope_um_per_c"), exp["beta"][1], 0.0015)
+            and _close(coef.get("curvature_um_per_c2"), exp["beta"][2], 0.0015))
 
 
 def test_chi2_reduced_near_unity():
