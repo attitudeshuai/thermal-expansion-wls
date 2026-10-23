@@ -54,7 +54,7 @@ def load_data(path):
         _fail("reference_temperature 要是数值")
     cfg = raw.get("fit") or {}
     rho = cfg.get("error_correlation", 0.0)
-    if not isinstance(rho, (int, float)) or isinstance(rho, bool) or not (0.0 <= float(rho) < 0.95):
+    if not isinstance(rho, (int, float)) or isinstance(rho, bool) or not (float(rho) >= 0.0 and float(rho) < 0.95):
         _fail("fit.error_correlation 要落在 [0, 0.95)")
     rho = float(rho)
     common = cfg.get("common_mode_sigma", 0.0)

@@ -5,56 +5,60 @@
   ],
   "tests": {
     "test_outputs.py::test_std_errors_reflect_point_weights": {
-      "weight": 0.088607594487502,
+      "weight": 0.08594936665287693,
       "rationale": "计量证书口径：加权或广义最小二乘与不确定度（std errors reflect point weights）"
     },
     "test_outputs.py::test_second_dataset_with_other_range": {
-      "weight": 0.06329113891964429,
+      "weight": 0.06139240475205496,
       "rationale": "计量证书口径：加权或广义最小二乘与不确定度（second dataset with other range）"
     },
     "test_outputs.py::test_chi2_reduced_near_unity": {
-      "weight": 0.05063291113571543,
+      "weight": 0.04911392380164396,
       "rationale": "计量证书口径：加权或广义最小二乘与不确定度（chi2 reduced near unity）"
     },
     "test_outputs.py::test_corr_a1_a2_matches_independent": {
-      "weight": 0.05063291113571543,
+      "weight": 0.04911392380164396,
       "rationale": "计量证书口径：加权或广义最小二乘与不确定度（corr a1 a2 matches independent）"
     },
     "test_outputs.py::test_correlated_errors_std_error_matches_gls": {
-      "weight": 0.12658227896587085,
+      "weight": 0.12278481059689472,
       "rationale": "计量证书口径：加权或广义最小二乘与不确定度（correlated errors std error matches gls）"
     },
     "test_outputs.py::test_common_mode_error_handled": {
-      "weight": 0.12658227896587085,
+      "weight": 0.12278481059689472,
       "rationale": "计量证书口径：加权或广义最小二乘与不确定度（common mode error handled）"
     },
     "test_outputs.py::test_exactly_min_used_points_accepted": {
-      "weight": 0.113924051181942,
+      "weight": 0.11050632964648374,
       "rationale": "计量证书口径：加权或广义最小二乘与不确定度（exactly min used points accepted）"
     },
     "test_outputs.py::test_one_minus_min_used_rejected": {
-      "weight": 0.113924051181942,
+      "weight": 0.11050632964648374,
       "rationale": "计量证书口径：加权或广义最小二乘与不确定度（one minus min used rejected）"
     },
     "test_outputs.py::test_huge_sigma_point_barely_moves_fit": {
-      "weight": 0.10126582227143086,
+      "weight": 0.09822784760328793,
       "rationale": "计量证书口径：加权或广义最小二乘与不确定度（huge sigma point barely moves fit）"
     },
     "test_outputs.py::test_report_schema_and_rounding": {
-      "weight": 0.025316455567857714,
+      "weight": 0.02455696190082198,
       "rationale": "计量证书口径：加权或广义最小二乘与不确定度（report schema and rounding）"
     },
     "test_outputs.py::test_rerun_produces_identical_bytes": {
-      "weight": 0.025316455567857714,
+      "weight": 0.02455696190082198,
       "rationale": "计量证书口径：加权或广义最小二乘与不确定度（rerun produces identical bytes）"
     },
     "test_outputs.py::test_failed_run_keeps_previous_report": {
-      "weight": 0.012658227783928857,
+      "weight": 0.01227848095041099,
       "rationale": "计量证书口径：加权或广义最小二乘与不确定度（failed run keeps previous report）"
     },
     "test_outputs.py::test_coefficients_match_independent_wls": {
-      "weight": 0.101265822834722,
+      "weight": 0.09822784814968034,
       "rationale": "起点程序做不对核心拟合就不给分"
+    },
+    "test_outputs.py::test_zero_plateau_tolerance_rejected": {
+      "weight": 0.03,
+      "rationale": "边界值拒收：正好落在「必须为正」的边界上"
     }
   }
 }

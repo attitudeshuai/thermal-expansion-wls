@@ -9,19 +9,20 @@ reward.txt 由 tests/test.sh 在确认 pytest 结构化报告非空之后再落�
 import os
 
 WEIGHTS = {
-    "test_std_errors_reflect_point_weights": 0.088607594,
-    "test_second_dataset_with_other_range": 0.063291139,
-    "test_chi2_reduced_near_unity": 0.050632911,
-    "test_corr_a1_a2_matches_independent": 0.050632911,
-    "test_correlated_errors_std_error_matches_gls": 0.126582279,
-    "test_common_mode_error_handled": 0.126582279,
-    "test_exactly_min_used_points_accepted": 0.113924051,
-    "test_one_minus_min_used_rejected": 0.113924051,
-    "test_huge_sigma_point_barely_moves_fit": 0.101265822,
-    "test_report_schema_and_rounding": 0.025316456,
-    "test_rerun_produces_identical_bytes": 0.025316456,
-    "test_failed_run_keeps_previous_report": 0.012658228,
-    "test_coefficients_match_independent_wls": 0.101265823,
+    "test_std_errors_reflect_point_weights": 0.085949367,
+    "test_second_dataset_with_other_range": 0.061392405,
+    "test_chi2_reduced_near_unity": 0.049113924,
+    "test_corr_a1_a2_matches_independent": 0.049113924,
+    "test_correlated_errors_std_error_matches_gls": 0.122784811,
+    "test_common_mode_error_handled": 0.122784811,
+    "test_exactly_min_used_points_accepted": 0.110506330,
+    "test_one_minus_min_used_rejected": 0.110506330,
+    "test_huge_sigma_point_barely_moves_fit": 0.098227848,
+    "test_report_schema_and_rounding": 0.024556962,
+    "test_rerun_produces_identical_bytes": 0.024556962,
+    "test_failed_run_keeps_previous_report": 0.012278481,
+    "test_coefficients_match_independent_wls": 0.098227848,
+    "test_zero_plateau_tolerance_rejected": 0.030000000,
 }
 
 _RESULTS = {}

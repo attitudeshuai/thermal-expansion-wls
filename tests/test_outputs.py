@@ -518,3 +518,21 @@ def test_failed_run_keeps_previous_report():
     if second.returncode != 2:
         return False
     return open(opath, "rb").read() == before
+
+
+def test_zero_plateau_tolerance_rejected():
+    """题面原文：「fit.plateau_tolerance_c 要是正数」。
+
+    把恒温容差设成 0（边界值）：必须退出码 2 且不产出证书。
+    """
+    data = make_data(seed=821)
+    data["fit"]["plateau_tolerance_c"] = 0
+    tmp = tempfile.mkdtemp(prefix="te-bound-")
+    dpath = os.path.join(tmp, "dilatometer.json")
+    opath = os.path.join(tmp, "report.json")
+    with open(dpath, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False)
+    proc = _run(dpath, opath)
+    assert proc.returncode == 2, "恒温容差为 0 时退出码应为 2，实际 %r" % proc.returncode
+    assert not os.path.exists(opath), "恒温容差为 0 时不该产出证书"
+
